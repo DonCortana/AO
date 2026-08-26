@@ -145,10 +145,22 @@ PROVIDER_PRICING: dict[str, ProviderPrice] = {
     ),
     "perplexity": ProviderPrice(
         provider="perplexity",
-        effective_from=date(2026, 8, 25),
-        input_per_mtok=0.0,
-        output_per_mtok=0.0,
-        search_unit_cost=None,
-        notes="TODO: confirm current Sonar API pricing before Week 2 build",
+        effective_from=date(2026, 8, 26),
+        # sonar model, Sonar Chat Completions (D-031) — confirmed against
+        # docs.perplexity.ai pricing, 2026-08-26.
+        input_per_mtok=1.00,
+        output_per_mtok=1.00,
+        # Sonar charges a flat per-request fee on top of token cost, tiered
+        # by search_context_size: $5/1,000 (low), $8/1,000 (medium),
+        # $12/1,000 (high) requests. The adapter does not force a tier
+        # explicitly (no confirmed request parameter for it — see
+        # perplexity_adapter.py), so the actual tier used is whatever
+        # Sonar defaults to. Priced here at the "low" rate as a documented
+        # floor estimate, not a confirmed match — reconcile against the
+        # tier actually reported in each response's usage object once
+        # live-tested, and tighten this before it feeds a real client
+        # cost ledger.
+        search_unit_cost=0.005,
+        notes="sonar via Sonar Chat Completions (D-031) — retires 2026-09-27, tracked rebuild deadline in decision-register.md.",
     ),
 }

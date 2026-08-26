@@ -24,9 +24,11 @@ import asyncio
 
 from _fixtures import ensure_system_zero_fixtures
 
+from atlas.adapters.anthropic_adapter import AnthropicAdapter
 from atlas.adapters.base import PromptContext
 from atlas.adapters.gemini_adapter import GeminiAdapter
 from atlas.adapters.openai_adapter import OpenAIAdapter
+from atlas.adapters.perplexity_adapter import PerplexityAdapter
 from atlas.costs.ledger import CostRecord, record_cost
 from atlas.db.client import get_db
 from atlas.planner.run_planner import plan_run
@@ -34,8 +36,8 @@ from atlas.planner.run_planner import plan_run
 ADAPTERS = {
     "openai": OpenAIAdapter,
     "gemini": GeminiAdapter,
-    # "perplexity": PerplexityAdapter,  # add once Technical Lane step 6 is built
-    # "anthropic": AnthropicAdapter,    # add once Technical Lane step 7 is built
+    "perplexity": PerplexityAdapter,
+    "anthropic": AnthropicAdapter,
 }
 
 
