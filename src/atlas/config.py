@@ -94,13 +94,19 @@ PROVIDER_PRICING: dict[str, ProviderPrice] = {
         search_unit_cost=0.010,  # $10 / 1,000 searches
         notes="claude-sonnet-5, introductory pricing confirmed held past Sept 2026",
     ),
-    "openai": ProviderPrice(
+        "openai": ProviderPrice(
         provider="openai",
-        effective_from=date(2026, 8, 25),
-        input_per_mtok=0.0,
-        output_per_mtok=0.0,
-        search_unit_cost=None,
-        notes="TODO: confirm current Responses API + web_search pricing before Week 2 build",
+        effective_from=date(2026, 8, 26),
+        # Confirmed against platform.openai.com/docs/pricing for gpt-5.6
+        # (short-context tier — Atlas prompts are single-sentence intent
+        # queries, well under any long-context threshold). If prompt length
+        # grows enough to risk crossing into the long-context tier
+        # ($4.00/$15.00 per MTok), this needs a length-aware lookup instead
+        # of a flat rate — not built yet, flag if that becomes a risk.
+        input_per_mtok=2.00,
+        output_per_mtok=10.00,
+        search_unit_cost=0.010,  # $10 / 1,000 web_search calls
+        notes="gpt-5.6, short-context tier",
     ),
     "gemini": ProviderPrice(
         provider="gemini",
