@@ -1,0 +1,33 @@
+name: System Zero
+
+on:
+  workflow_dispatch:
+    inputs:
+      property_id:
+        description: "System Zero property UUID (properties.is_system_zero = true)"
+        required: true
+        type: string
+
+jobs:
+  run-system-zero:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Run System Zero pipeline
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ATLAS_ENV: production
+        run: |
+          echo "TODO(Week 1): python -m atlas.runners.system_zero --property-id ${{ inputs.property_id }}"
+          echo "Acceptance criteria live in docs/atlas-execution-plan-v1.0.md §3 — do not mark this workflow done until every row in that table passes."
