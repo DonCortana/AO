@@ -53,10 +53,12 @@ pip install -e .
 cp .env.example .env   # fill in from Bitwarden — never commit .env
 ```
 
-Secrets (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`PERPLEXITY_API_KEY`, Supabase keys) live in the GitHub `production`
-environment, restricted to the `main` branch. Local `.env` is for dev only
-and is gitignored.
+Secrets (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`,
+`GCP_SERVICE_ACCOUNT_JSON`, `GOOGLE_CLOUD_PROJECT`, Supabase keys) live in
+the GitHub `production` environment, restricted to the `main` branch. Gemini
+authenticates via Vertex AI service-account credentials, not an API key
+(D-029) — see `docs/decision-register.md`. Local `.env` is for dev only and
+is gitignored.
 
 ## Week 1 acceptance criterion
 

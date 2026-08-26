@@ -1,3 +1,8 @@
+# Manual recovery path, required for every scheduled workflow
+# (Operating System §4). Use this to re-run reconciliation and requeue any
+# run_plan stuck below 90% completeness after a dropped/delayed Action run,
+# without re-planning or duplicating already-completed observations.
+
 name: Recovery Dispatch
 
 on:
@@ -14,11 +19,14 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install -e .
+
       - name: Reconcile run plan and requeue missing tasks
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -26,10 +34,17 @@ jobs:
           ATLAS_ENV: production
         run: |
           echo "TODO(Week 3): python -c \"from atlas.reconciliation.reconcile import reconcile_run; print(reconcile_run('${{ inputs.run_plan_id }}'))\""
+
+      - name: Materialize Vertex AI service account credentials (D-029)
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > "$RUNNER_TEMP/gcp-sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
+
       - name: Resume queued tasks
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: us-central1
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

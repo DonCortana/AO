@@ -24,9 +24,20 @@ class Settings:
     score_model_version: str
 
     openai_api_key: str
-    gemini_api_key: str
     anthropic_api_key: str
     perplexity_api_key: str
+
+    # Gemini auth (D-029): Vertex AI service-account auth, not an AI Studio
+    # API/authorization key. Routes around the AI Studio prepay-credits
+    # billing bug via standard Cloud Billing instead. Auth itself is via
+    # Application Default Credentials, which reads GOOGLE_APPLICATION_
+    # CREDENTIALS from the environment automatically — it is not passed to
+    # the genai.Client call explicitly. Still required here so a missing
+    # credential fails fast with a clear message instead of a confusing
+    # auth error deep inside the Vertex client.
+    google_cloud_project: str
+    google_cloud_location: str
+    google_application_credentials: str
 
     supabase_url: str
     supabase_service_role_key: str
@@ -41,9 +52,11 @@ def get_settings() -> Settings:
         atlas_env=os.environ.get("ATLAS_ENV", "development"),
         score_model_version=os.environ.get("SCORE_MODEL_VERSION", "v1.0-RC"),
         openai_api_key=_require("OPENAI_API_KEY"),
-        gemini_api_key=_require("GEMINI_API_KEY"),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         perplexity_api_key=_require("PERPLEXITY_API_KEY"),
+        google_cloud_project=_require("GOOGLE_CLOUD_PROJECT"),
+        google_cloud_location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        google_application_credentials=_require("GOOGLE_APPLICATION_CREDENTIALS"),
         supabase_url=_require("SUPABASE_URL"),
         supabase_service_role_key=_require("SUPABASE_SERVICE_ROLE_KEY"),
         google_drive_evidence_folder_id=os.environ.get(
@@ -113,13 +126,17 @@ PROVIDER_PRICING: dict[str, ProviderPrice] = {
         effective_from=date(2026, 8, 26),
         input_per_mtok=0.75,
         output_per_mtok=3.75,
-        # $14/1,000 google_search requests — but the first 5,000/month are
-        # free, shared across all Gemini 3.x models. This flat rate does
-        # NOT model that free tier, so it overcharges every observation
-        # until usage crosses the monthly threshold. Fine for a Week 2
-        # smoke test; revisit before this feeds a real client cost ledger.
+        # $14/1,000 google_search requests on the AI Studio path — but the
+        # first 5,000/month are free, shared across all Gemini 3.x models.
+        # This flat rate does NOT model that free tier, so it overcharges
+        # every observation until usage crosses the monthly threshold.
+        # TODO(D-029): Grounding with Google Search billing on Vertex AI has
+        # historically been listed as a separate line item from the AI
+        # Studio rate — NOT independently confirmed for this project yet.
+        # Treat this number as provisional until checked against the live
+        # Vertex AI Console billing export after the first real run.
         search_unit_cost=0.014,
-        notes="gemini-3.7-flash; pricing holds through Dec 31 2026, rises to $1.50/$7.50 from Jan 1 2027 — recheck before then",
+        notes="gemini-3.7-flash via Vertex AI (D-029); token pricing holds through Dec 31 2026, rises to $1.50/$7.50 from Jan 1 2027 — recheck before then. Grounding unit cost not yet reconfirmed for the Vertex AI billing path.",
     ),
     "perplexity": ProviderPrice(
         provider="perplexity",

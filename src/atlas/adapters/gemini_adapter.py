@@ -1,10 +1,21 @@
-"""Gemini adapter — Interactions API + google_search.
+"""Gemini adapter — Vertex AI, generate_content + google_search grounding.
 
-Operating System §5: "Gemini adapter uses current Interactions API with
-google_search; use an authorization key, not a standard key." The
-authorization key was created ahead of schedule (Execution Plan Action 0,
-G0) specifically so this adapter is never run against a standard key,
-which the API rejects entirely from September 2026.
+D-029: This adapter was originally written against the Gemini Developer
+API's Interactions API (AI Studio authorization key). It was rewritten to
+authenticate via Vertex AI (service-account / Application Default
+Credentials, billed through standard Cloud Billing) after AI Studio's
+prepay-credits billing UI hit an unresolvable bug — see decision-register.md
+D-029 for the full record.
+
+That auth swap forced a second, larger change: as of this rewrite, the
+Interactions API is Gemini Developer API only — it is not available on
+Vertex AI yet (Google's own Gemini API team confirmed it is on the roadmap
+but not shipped). So this adapter no longer calls `client.interactions.
+create`; it calls the standard `client.models.generate_content` with the
+`google_search` tool, which IS available on Vertex AI today. The grounding
+contract from Methodology §8.1 is unchanged — grounded vs excluded, retry-
+once-with-explicit-instruction — only the API surface used to implement it
+changed.
 
 Grounding contract (Methodology §8.1): same shape as the OpenAI adapter,
 with one real difference — Gemini's `tools` parameter has no documented
@@ -41,11 +52,12 @@ from atlas.config import get_settings
 from atlas.costs.ledger import compute_cost
 from atlas.evidence.vault import hash_payload
 
-# Pinned explicitly, never swapped silently (Operating System §5). Flash
-# tier chosen for cost, mirroring the OpenAI adapter's mid-tier pick —
-# revisit if Pro-tier accuracy is needed for calibration.
-GEMINI_MODEL = "gemini-3.7-flash"  # TODO(Week 2): confirm this is the intended pin before first real run
-TOOL_VERSION = "google_search-2026-08"
+# Pinned explicitly, never swapped silently (Operating System §5).
+# TODO(D-029 first live run): confirm this exact model id is available in
+# the chosen google_cloud_location on Vertex AI — regional availability can
+# lag AI Studio, where this was originally validated.
+GEMINI_MODEL = "gemini-3.7-flash"
+TOOL_VERSION = "google_search-vertex-2026-08"
 
 
 class GeminiAdapter(ProviderAdapter):
@@ -53,17 +65,24 @@ class GeminiAdapter(ProviderAdapter):
 
     def __init__(self) -> None:
         settings = get_settings()
-        # Authorization key created at G0 — the SDK has no separate init
-        # path for authorization vs standard keys; the distinction is
-        # entirely server-side, in how the key was created in AI Studio.
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+        # Vertex AI auth (D-029) — Application Default Credentials reads
+        # GOOGLE_APPLICATION_CREDENTIALS from the environment itself; it is
+        # not passed here explicitly. Works both for local dev (.env sets
+        # the env var to a local JSON key path) and CI (the GitHub Actions
+        # workflow materializes the key to a file at runtime — see
+        # .github/workflows/*.yml).
+        self._client = genai.Client(
+            vertexai=True,
+            project=settings.google_cloud_project,
+            location=settings.google_cloud_location,
+        )
 
     async def observe(self, prompt: PromptContext, replicate_index: int) -> ObservationRecord:
         request_time = datetime.now(timezone.utc)
-        interaction, retried = self._call_with_grounding_retry(prompt)
+        response, retried = self._call_with_grounding_retry(prompt)
         completion_time = datetime.now(timezone.utc)
 
-        search_invoked = self._has_google_search_call(interaction)
+        search_invoked = self._has_google_search_call(response)
         if search_invoked:
             grounding_status = (
                 GroundingStatus.GROUNDED if not retried else GroundingStatus.UNGROUNDED_RETRIED_GROUNDED
@@ -74,16 +93,19 @@ class GeminiAdapter(ProviderAdapter):
             status = RunState.EXCLUDED  # never silently scored as grounded
 
         raw_response = (
-            interaction.model_dump() if hasattr(interaction, "model_dump") else dict(interaction)
+            response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
 
-        # TODO(Week 2): confirm exact usage field names against a live
-        # response — not clearly documented at time of writing. Defensive
-        # getattr chain so a missing/renamed field degrades to
-        # is_unknown_cost rather than crashing the adapter.
-        usage = getattr(interaction, "usage", None)
-        input_tokens = getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None) or 0
-        output_tokens = getattr(usage, "output_tokens", None) or getattr(usage, "candidates_tokens", None) or 0
+        # TODO(D-029 first live run): confirm exact usage field names
+        # against a live Vertex response — the Gemini Developer API and
+        # Vertex AI have historically matched on prompt_token_count /
+        # candidates_token_count / total_token_count, but this has not been
+        # independently confirmed for this project yet. Defensive getattr
+        # chain so a missing/renamed field degrades to is_unknown_cost
+        # rather than crashing the adapter.
+        usage = getattr(response, "usage_metadata", None)
+        input_tokens = getattr(usage, "prompt_token_count", None) or 0
+        output_tokens = getattr(usage, "candidates_token_count", None) or 0
         search_units = 1 if search_invoked else 0
         cost_usd, is_unknown_cost = compute_cost("gemini", input_tokens, output_tokens, search_units)
 
@@ -92,7 +114,7 @@ class GeminiAdapter(ProviderAdapter):
             identity=Identity(
                 provider=self.provider_name,
                 model=GEMINI_MODEL,
-                model_snapshot=getattr(interaction, "model", GEMINI_MODEL),
+                model_snapshot=getattr(response, "model_version", GEMINI_MODEL),
                 tool_version=TOOL_VERSION,
             ),
             prompt=prompt,
@@ -100,7 +122,7 @@ class GeminiAdapter(ProviderAdapter):
                 search_available=True,
                 search_invoked=search_invoked,
                 grounding_status=grounding_status,
-                source_records=self._extract_citations(interaction),
+                source_records=self._extract_citations(response),
             ),
             outcome=Outcome(
                 raw_response=raw_response,
@@ -129,48 +151,61 @@ class GeminiAdapter(ProviderAdapter):
         )
 
     def _call_with_grounding_retry(self, prompt: PromptContext):
-        interaction = self._client.interactions.create(
+        response = self._client.models.generate_content(
             model=GEMINI_MODEL,
-            input=prompt.prompt_text,
-            tools=[{"type": "google_search"}],
+            contents=prompt.prompt_text,
+            tools=[{"google_search": {}}],
         )
-        if self._has_google_search_call(interaction):
-            return interaction, False
+        if self._has_google_search_call(response):
+            return response, False
 
-        retry_interaction = self._client.interactions.create(
+        retry_response = self._client.models.generate_content(
             model=GEMINI_MODEL,
-            input=(
+            contents=(
                 f"{prompt.prompt_text}\n\n"
                 "Use current Google Search to answer — do not rely on prior knowledge alone."
             ),
-            tools=[{"type": "google_search"}],
+            tools=[{"google_search": {}}],
         )
-        return retry_interaction, True
+        return retry_response, True
 
     @staticmethod
-    def _has_google_search_call(interaction) -> bool:
-        return any(
-            getattr(step, "type", None) == "google_search_call" for step in getattr(interaction, "steps", []) or []
-        )
+    def _grounding_metadata(response):
+        # generate_content nests grounding_metadata under the first
+        # candidate on some SDK/response versions and exposes it directly
+        # on others — checked defensively rather than assumed, same
+        # discipline as the usage-field extraction above.
+        direct = getattr(response, "grounding_metadata", None)
+        if direct is not None:
+            return direct
+        candidates = getattr(response, "candidates", None) or []
+        if candidates:
+            return getattr(candidates[0], "grounding_metadata", None)
+        return None
 
-    @staticmethod
-    def _extract_citations(interaction) -> list[dict]:
+    @classmethod
+    def _has_google_search_call(cls, response) -> bool:
+        gm = cls._grounding_metadata(response)
+        if gm is None:
+            return False
+        return bool(getattr(gm, "web_search_queries", None)) or bool(getattr(gm, "grounding_chunks", None))
+
+    @classmethod
+    def _extract_citations(cls, response) -> list[dict]:
+        gm = cls._grounding_metadata(response)
+        if gm is None:
+            return []
         citations = []
-        for step in getattr(interaction, "steps", []) or []:
-            if getattr(step, "type", None) != "model_output":
+        for chunk in getattr(gm, "grounding_chunks", None) or []:
+            web = getattr(chunk, "web", None)
+            if web is None:
                 continue
-            for content_block in getattr(step, "content", []) or []:
-                if getattr(content_block, "type", None) != "text":
-                    continue
-                for annotation in getattr(content_block, "annotations", []) or []:
-                    if getattr(annotation, "type", None) == "url_citation":
-                        citations.append(
-                            {
-                                "url": annotation.url,
-                                "start_index": getattr(annotation, "start_index", None),
-                                "end_index": getattr(annotation, "end_index", None),
-                            }
-                        )
+            citations.append(
+                {
+                    "url": getattr(web, "uri", None),
+                    "title": getattr(web, "title", None),
+                }
+            )
         return citations
 
     async def maps_diagnostic(self, prompt: PromptContext, coordinates: tuple[float, float] | None):

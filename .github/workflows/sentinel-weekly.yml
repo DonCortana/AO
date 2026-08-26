@@ -1,9 +1,17 @@
+# Weekly Sentinel Set, n=1. Operating System §9. Anomaly/direction
+# monitoring only — Methodology §6.1: Sentinel replicates "may NOT support
+# a movement verdict." Never promote this workflow's output to a client
+# movement claim.
+#
+# Cron avoids the top of the hour per Operating System §4 ("Cron schedules
+# avoid the start of the hour. Use a non-round minute such as :17 or :37.").
+
 name: Sentinel Weekly
 
 on:
   schedule:
-    - cron: "37 8 * * 1"
-  workflow_dispatch: {}
+    - cron: "37 8 * * 1" # Monday 08:37 UTC
+  workflow_dispatch: {} # manual recovery path required for every scheduled workflow (Operating System §4)
 
 jobs:
   run-sentinel:
@@ -11,15 +19,24 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install -e .
+
+      - name: Materialize Vertex AI service account credentials (D-029)
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > "$RUNNER_TEMP/gcp-sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
+
       - name: Run weekly Sentinel Set (n=1, 4-6 prompts per active property)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: us-central1
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -27,6 +44,7 @@ jobs:
           ATLAS_ENV: production
         run: |
           echo "TODO(post-Week 1): python -m atlas.runners.sentinel"
+
       - name: Reconcile
         if: always()
         run: |

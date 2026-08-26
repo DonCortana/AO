@@ -1,3 +1,9 @@
+# System Zero — manual only. Execution Plan §3: "System Zero must not delay
+# commercial conversations. Outreach may begin while System Zero runs. What
+# may not happen is delivery of a frozen Atlas score before the hospitality
+# calibration gate passes." It is never scheduled — it's an engineering
+# test run deliberately, on demand, against Atlas's own domain.
+
 name: System Zero
 
 on:
@@ -14,15 +20,24 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install -e .
+
+      - name: Materialize Vertex AI service account credentials (D-029)
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > "$RUNNER_TEMP/gcp-sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
+
       - name: Run System Zero pipeline
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: us-central1
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

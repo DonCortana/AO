@@ -15,6 +15,7 @@ implemented.
 |---|---|---|---|
 | D-001 | pre-v1.0 | Dual-score AVI-composite + AVS model | **Retired** by D-028 |
 | D-028 | 2026-08-25 | Retire AVI before Client #1. Atlas will not combine an observed outcome and controllable levers into one headline composite. Official client metrics are AVS (outcome) and Atlas Readiness Score (controllable), reported separately. Historical compatibility with AVI is unnecessary because no paying client baseline had yet been issued. | Active |
+| D-029 | 2026-08-26 | Gemini adapter authenticates via Vertex AI (service account / Application Default Credentials, standard Cloud Billing) instead of an AI Studio authorization key. Reason: AI Studio's prepay-credits billing UI hit an unresolvable bug blocking G0 closure. Forced consequence, not a separate choice: the Interactions API is Gemini Developer API only and is not available on Vertex AI at time of writing, so the adapter's grounding call was also rewritten from `client.interactions.create` to `client.models.generate_content` with the `google_search` tool — the standard endpoint Vertex AI does support today. The grounding contract (grounded vs excluded, retry-once-with-explicit-instruction, Methodology §8.1) is unchanged; only the API surface implementing it changed. Grounding unit cost in `config.py` is carried forward provisionally and flagged for reconfirmation against the live Vertex AI billing export. | Active |
 
 ## Adding a decision
 

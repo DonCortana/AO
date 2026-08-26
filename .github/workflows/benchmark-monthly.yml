@@ -1,8 +1,13 @@
+# Monthly Benchmark, n=1 for broader diagnostic visibility and competitor
+# context (Operating System §9). Also carries the monthly Frozen Core (n=5)
+# when the measurement window is eligible, and the full readiness refresh.
+# Non-round cron minute per Operating System §4.
+
 name: Benchmark Monthly
 
 on:
   schedule:
-    - cron: "17 9 1 * *"
+    - cron: "17 9 1 * *" # 1st of month, 09:17 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -11,15 +16,24 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install -e .
+
+      - name: Materialize Vertex AI service account credentials (D-029)
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > "$RUNNER_TEMP/gcp-sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-sa.json" >> "$GITHUB_ENV"
+
       - name: Run monthly Benchmark (n=1) + Frozen Core (n=5) where eligible
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: us-central1
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -27,6 +41,7 @@ jobs:
           ATLAS_ENV: production
         run: |
           echo "TODO(post-Week 1): python -m atlas.runners.benchmark_monthly"
+
       - name: Reconcile
         if: always()
         run: |
