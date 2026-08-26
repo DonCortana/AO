@@ -53,10 +53,17 @@ from atlas.costs.ledger import compute_cost
 from atlas.evidence.vault import hash_payload
 
 # Pinned explicitly, never swapped silently (Operating System §5).
-# TODO(D-029 first live run): confirm this exact model id is available in
-# the chosen google_cloud_location on Vertex AI — regional availability can
-# lag AI Studio, where this was originally validated.
-GEMINI_MODEL = "gemini-3.7-flash"
+# D-030: gemini-3.7-flash returned a clean 404 NOT_FOUND on Vertex AI
+# ("Publisher model ... was not found or your project does not have
+# access to it") on first live run (2026-08-26) — confirmed not a
+# permissions issue (IAM was separately fixed and re-tested; the 404 is a
+# different, unambiguous error class from the earlier 403). The Gemini 3.x
+# line is not yet GA on Vertex AI at time of writing. Pinned down to
+# gemini-2.5-flash — confirmed GA and live-tested against this exact
+# project/location. Revisit once 3.x reaches Vertex GA; do not swap back
+# without re-confirming and updating PROVIDER_PRICING in config.py, which
+# is priced per-model.
+GEMINI_MODEL = "gemini-2.5-flash"
 TOOL_VERSION = "google_search-vertex-2026-08"
 
 

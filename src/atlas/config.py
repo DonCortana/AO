@@ -124,19 +124,24 @@ PROVIDER_PRICING: dict[str, ProviderPrice] = {
     "gemini": ProviderPrice(
         provider="gemini",
         effective_from=date(2026, 8, 26),
-        input_per_mtok=0.75,
-        output_per_mtok=3.75,
-        # $14/1,000 google_search requests on the AI Studio path — but the
-        # first 5,000/month are free, shared across all Gemini 3.x models.
-        # This flat rate does NOT model that free tier, so it overcharges
-        # every observation until usage crosses the monthly threshold.
-        # TODO(D-029): Grounding with Google Search billing on Vertex AI has
-        # historically been listed as a separate line item from the AI
-        # Studio rate — NOT independently confirmed for this project yet.
-        # Treat this number as provisional until checked against the live
-        # Vertex AI Console billing export after the first real run.
-        search_unit_cost=0.014,
-        notes="gemini-3.7-flash via Vertex AI (D-029); token pricing holds through Dec 31 2026, rises to $1.50/$7.50 from Jan 1 2027 — recheck before then. Grounding unit cost not yet reconfirmed for the Vertex AI billing path.",
+        # D-030: model pin dropped to gemini-2.5-flash (gemini-3.7-flash is
+        # not yet GA on Vertex AI — see gemini_adapter.py). Confirmed
+        # against cloud.google.com/gemini-enterprise-agent-platform/
+        # generative-ai/pricing (Vertex AI's current name), 2026-08-26.
+        input_per_mtok=0.30,
+        output_per_mtok=2.50,
+        # $35/1,000 Grounding with Google Search requests on Vertex AI,
+        # beyond a free quota of 1,500 grounded prompts/day. This is a
+        # materially different rate AND a different free-tier shape than
+        # the AI Studio path's $14/1,000 with 5,000/month free — the two
+        # billing surfaces are not interchangeable, confirming the D-029
+        # note that this needed independent reconfirmation, not a carried-
+        # forward assumption. This flat rate does not model the free daily
+        # quota, so it overcharges every observation until usage crosses
+        # it — fine for a smoke test, revisit before this feeds a real
+        # client cost ledger.
+        search_unit_cost=0.035,
+        notes="gemini-2.5-flash via Vertex AI (D-030, supersedes the gemini-3.7-flash AI Studio pricing this row previously held). Re-check pricing and reconsider the model pin once Gemini 3.x reaches Vertex AI GA.",
     ),
     "perplexity": ProviderPrice(
         provider="perplexity",
