@@ -1,0 +1,33 @@
+name: Sentinel Weekly
+
+on:
+  schedule:
+    - cron: "37 8 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  run-sentinel:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Run weekly Sentinel Set (n=1, 4-6 prompts per active property)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ATLAS_ENV: production
+        run: |
+          echo "TODO(post-Week 1): python -m atlas.runners.sentinel"
+      - name: Reconcile
+        if: always()
+        run: |
+          echo "TODO: python -m atlas.reconciliation.reconcile --run-type sentinel --window 24h"
