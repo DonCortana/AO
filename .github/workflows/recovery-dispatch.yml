@@ -1,0 +1,39 @@
+name: Recovery Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_plan_id:
+        description: "run_plans.id to reconcile and resume"
+        required: true
+        type: string
+
+jobs:
+  reconcile-and-resume:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Reconcile run plan and requeue missing tasks
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ATLAS_ENV: production
+        run: |
+          echo "TODO(Week 3): python -c \"from atlas.reconciliation.reconcile import reconcile_run; print(reconcile_run('${{ inputs.run_plan_id }}'))\""
+      - name: Resume queued tasks
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ATLAS_ENV: production
+        run: |
+          echo "TODO(Week 3): python -m atlas.runners.resume --run-plan-id ${{ inputs.run_plan_id }}"
