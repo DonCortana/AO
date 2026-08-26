@@ -99,8 +99,15 @@ class GeminiAdapter(ProviderAdapter):
             grounding_status = GroundingStatus.UNGROUNDED_INELIGIBLE
             status = RunState.EXCLUDED  # never silently scored as grounded
 
+        # mode="json" matters here, not just hasattr — Vertex AI responses
+        # carry a real datetime object on create_time, and the default
+        # model_dump() leaves it as-is, which json.dumps() in the evidence
+        # vault's hash_payload() then rejects with "datetime is not JSON
+        # serializable". mode="json" recursively coerces every field
+        # (datetimes included) to plain JSON-safe types. Verified against
+        # the installed SDK directly (2026-08-26) after hitting this live.
         raw_response = (
-            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+            response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
         )
 
         # Field names confirmed against the installed google-genai SDK's

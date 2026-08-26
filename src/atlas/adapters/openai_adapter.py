@@ -69,7 +69,14 @@ class OpenAIAdapter(ProviderAdapter):
             grounding_status = GroundingStatus.UNGROUNDED_INELIGIBLE
             status = RunState.EXCLUDED  # never silently scored as grounded
 
-        raw_response = response.model_dump()
+        # mode="json" — not just model_dump() — so any datetime (or other
+        # non-JSON-native) field is coerced to a plain JSON-safe type before
+        # it reaches the evidence vault's hash_payload()/json.dumps() call.
+        # Hasn't been observed to crash on OpenAI's response shape yet, but
+        # the Gemini adapter hit exactly this failure live on Vertex AI's
+        # create_time field — fixing it here too rather than waiting to
+        # find out this adapter has the same latent bug.
+        raw_response = response.model_dump(mode="json")
 
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "input_tokens", 0) or 0
