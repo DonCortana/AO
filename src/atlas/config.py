@@ -94,7 +94,7 @@ PROVIDER_PRICING: dict[str, ProviderPrice] = {
         search_unit_cost=0.010,  # $10 / 1,000 searches
         notes="claude-sonnet-5, introductory pricing confirmed held past Sept 2026",
     ),
-        "openai": ProviderPrice(
+    "openai": ProviderPrice(
         provider="openai",
         effective_from=date(2026, 8, 26),
         # Confirmed against platform.openai.com/docs/pricing for gpt-5.6
@@ -110,11 +110,16 @@ PROVIDER_PRICING: dict[str, ProviderPrice] = {
     ),
     "gemini": ProviderPrice(
         provider="gemini",
-        effective_from=date(2026, 8, 25),
-        input_per_mtok=0.0,
-        output_per_mtok=0.0,
-        search_unit_cost=None,
-        notes="TODO: confirm current Interactions API + google_search pricing before Week 2 build",
+        effective_from=date(2026, 8, 26),
+        input_per_mtok=0.75,
+        output_per_mtok=3.75,
+        # $14/1,000 google_search requests — but the first 5,000/month are
+        # free, shared across all Gemini 3.x models. This flat rate does
+        # NOT model that free tier, so it overcharges every observation
+        # until usage crosses the monthly threshold. Fine for a Week 2
+        # smoke test; revisit before this feeds a real client cost ledger.
+        search_unit_cost=0.014,
+        notes="gemini-3.7-flash; pricing holds through Dec 31 2026, rises to $1.50/$7.50 from Jan 1 2027 — recheck before then",
     ),
     "perplexity": ProviderPrice(
         provider="perplexity",
