@@ -96,13 +96,10 @@ class GeminiAdapter(ProviderAdapter):
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
 
-        # TODO(D-029 first live run): confirm exact usage field names
-        # against a live Vertex response — the Gemini Developer API and
-        # Vertex AI have historically matched on prompt_token_count /
-        # candidates_token_count / total_token_count, but this has not been
-        # independently confirmed for this project yet. Defensive getattr
-        # chain so a missing/renamed field degrades to is_unknown_cost
-        # rather than crashing the adapter.
+        # Field names confirmed against the installed google-genai SDK's
+        # GenerateContentResponseUsageMetadata (2026-08-26) — not a guess.
+        # getattr kept defensive anyway so a future SDK rename degrades to
+        # is_unknown_cost rather than crashing the adapter.
         usage = getattr(response, "usage_metadata", None)
         input_tokens = getattr(usage, "prompt_token_count", None) or 0
         output_tokens = getattr(usage, "candidates_token_count", None) or 0
@@ -151,10 +148,17 @@ class GeminiAdapter(ProviderAdapter):
         )
 
     def _call_with_grounding_retry(self, prompt: PromptContext):
+        # `tools` is not a top-level generate_content() kwarg on the
+        # installed google-genai SDK — it must be nested under `config`.
+        # Confirmed by inspecting the installed Models.generate_content
+        # signature and GenerateContentConfig fields directly (2026-08-26)
+        # after the first live run 404'd on this exact mistake.
+        grounding_config = {"tools": [{"google_search": {}}]}
+
         response = self._client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt.prompt_text,
-            tools=[{"google_search": {}}],
+            config=grounding_config,
         )
         if self._has_google_search_call(response):
             return response, False
@@ -165,16 +169,17 @@ class GeminiAdapter(ProviderAdapter):
                 f"{prompt.prompt_text}\n\n"
                 "Use current Google Search to answer — do not rely on prior knowledge alone."
             ),
-            tools=[{"google_search": {}}],
+            config=grounding_config,
         )
         return retry_response, True
 
     @staticmethod
     def _grounding_metadata(response):
-        # generate_content nests grounding_metadata under the first
-        # candidate on some SDK/response versions and exposes it directly
-        # on others — checked defensively rather than assumed, same
-        # discipline as the usage-field extraction above.
+        # Confirmed against the installed SDK: GenerateContentResponse has
+        # no top-level grounding_metadata field — it only lives on
+        # candidates[i].grounding_metadata. The direct-attribute check is
+        # kept as a harmless fallback in case a future SDK version exposes
+        # it both ways.
         direct = getattr(response, "grounding_metadata", None)
         if direct is not None:
             return direct
