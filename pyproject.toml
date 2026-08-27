@@ -12,6 +12,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "openai>=1.40",
     "google-genai>=0.5",
+    # Google Sheets (RPV labeling surface, atlas.tools.rpv_labeling) and Drive
+    # (Evidence Vault storage, Operating System §3). google-auth arrives
+    # transitively via google-genai but the API client does not — declared
+    # here rather than installed ad hoc, which is how psycopg2 ended up
+    # undeclared and absent from a clean checkout (see the dev extra below).
+    "google-api-python-client>=2.100",
     "anthropic>=0.34",
     "playwright>=1.45",
 ]
