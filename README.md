@@ -37,10 +37,16 @@ src/atlas/
   evidence/            SHA-256 hashing + Evidence Vault manifest
   costs/               cost ledger + budget rail (alert 80%, stop non-critical 100%)
   reconciliation/      expected-vs-completed check, requeue missing tasks
-  scoring/             intentionally empty — Technical Lane step 9: "Add scoring
-                       engine only after raw observations are trustworthy"
+  scoring/             AVS (§4.3) + Atlas Readiness Score (§3.1) + movement verdict (§6.2)
+    types.py           ReplicateObservation / PeriodObservations, §4.2 intent weights
+    loader.py          the engine's only input — the `recommendations` table (D-034)
+    avs.py             PVS -> PlatformScore -> AVS, §4.4 visibility bands
+    ars.py             (20*P2 + 15*P3 + 20*P4 + 15*P5) / 70, §3.1 readiness bands
+    movement.py        hierarchical paired bootstrap, MRC 5.0, five-way verdict
+    intervals.py       Wilson intervals, mention/top-3 rate, recommendation stability
 
 migrations/            Supabase SQL migrations, RLS enabled from migration 0001
+                       0004 is written but NOT yet applied — see D-035
 .github/workflows/     scheduled + manual-dispatch recovery workflows
 ```
 
