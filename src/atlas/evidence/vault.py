@@ -47,9 +47,9 @@ class EvidenceRecord:
     operator: str | None = None  # set only for human-captured (Layer B) evidence
     # Operating System §7 names "source reference" among the required evidence
     # fields. For Layer A this is the provider request/response identifier; for
-    # Layer B it is the consumer surface URL or capture reference. The
-    # `evidence` table has no column for it (see drive.EVIDENCE_TABLE_GAP), so
-    # today it travels on the Drive file's appProperties only.
+    # Layer B it is the consumer surface URL or capture reference. Stored in
+    # full in `evidence.source_reference` since migration 0007 (D-049); the
+    # Drive appProperties copy is truncated and not authoritative.
     source_reference: str | None = None
     observation_id: str | None = None
     manifest_id: str | None = None
@@ -86,9 +86,10 @@ def upload_to_drive(
     hash does not need to know how to turn an id back into a URL.
 
     When `record` is supplied, the Operating System §7 provenance fields are
-    written onto the Drive file as appProperties. The `evidence` table has no
-    columns for several of them (see `atlas.evidence.drive.EVIDENCE_TABLE_GAP`),
-    so this is what keeps the stored artifact self-describing.
+    written onto the Drive file as appProperties, keeping the stored artifact
+    self-describing for anyone who has the file but not the database. Since
+    migration 0007 (D-049) the same fields are also columns on `evidence`, and
+    that row — not this copy — is what an audit is answered from.
 
     Uploads are idempotent on the payload hash: re-running an interrupted
     capture batch reuses files it already stored rather than duplicating them.
@@ -146,6 +147,11 @@ def store_evidence(db, record: EvidenceRecord, local_path: str, folder_id: str |
     Upserts on `observation_id`, matching the unique constraint migration 0003
     added for exactly this reason (D-032): a retried or resumed capture must
     never double-write the evidence ledger.
+
+    Writes the full Operating System §7 provenance set to the row, not just to
+    Drive: migration 0007 (D-049) added `prompt_version`, `provider`, `model`,
+    `tool_version`, `market`, `language` and `source_reference` so the copy an
+    audit queries lives beside the hash it belongs to.
     """
     storage_path = upload_to_drive(local_path, folder_id, record=record)
     db.table("evidence").upsert(
@@ -157,6 +163,14 @@ def store_evidence(db, record: EvidenceRecord, local_path: str, folder_id: str |
             "storage_path": storage_path,
             "data_class": record.data_class,
             "captured_by": record.operator,
+            # Operating System §7, columns added by migration 0007 (D-049).
+            "prompt_version": record.prompt_version,
+            "provider": record.provider,
+            "model": record.model,
+            "tool_version": record.tool_version,
+            "market": record.market,
+            "language": record.language,
+            "source_reference": record.source_reference,
         },
         on_conflict="observation_id",
     ).execute()

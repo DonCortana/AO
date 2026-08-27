@@ -15,10 +15,11 @@ finds the files it already uploaded instead of duplicating them.
 Operating System §7 requires every evidence record to carry evidence ID, run
 ID, prompt version, provider/model/tool version, market, language, UTC
 timestamp, source reference, payload hash and operator. The `evidence` table
-has columns for only some of those (see EVIDENCE_TABLE_GAP below), so the full
-set is also written onto the Drive file itself as appProperties. That keeps
-the stored artifact self-describing even where the database row is thinner
-than §7 asks for.
+holds all of those since migration 0007 (D-049) and is what an audit is
+answered from; the full set is written onto the Drive file as appProperties as
+well, so the stored artifact stays self-describing for anyone holding the file
+without the database. The appProperties copy is truncated at Drive's 124-byte
+limit and is not the authoritative one.
 """
 
 from __future__ import annotations
@@ -52,13 +53,12 @@ CHUNK_SIZE_BYTES = 1024 * 1024
 # does not improve by being repeated.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
-# Known gap, flagged rather than silently worked around: the `evidence` table
-# (migration 0001) has no column for prompt_version, provider, model,
-# tool_version, market, language or source_reference, all of which Operating
-# System §7 requires an evidence record to carry. They are written to Drive
-# appProperties by this module so the artifact is self-describing. Closing the
-# gap in the database needs a migration and a decision-register row.
-EVIDENCE_TABLE_GAP = (
+# The Operating System §7 provenance fields that used to have no column in the
+# `evidence` table and rode on Drive appProperties alone. Migration 0007 gave
+# each of them a column (D-049), so this is now the list of fields written to
+# BOTH places: the database row is the queryable, authoritative copy, and the
+# appProperties copy keeps the downloaded artifact self-describing.
+EVIDENCE_PROVENANCE_COLUMNS = (
     "prompt_version",
     "provider",
     "model",

@@ -15,7 +15,7 @@ from googleapiclient.errors import HttpError
 
 from atlas.evidence import drive, vault
 from atlas.evidence.drive import (
-    EVIDENCE_TABLE_GAP,
+    EVIDENCE_PROVENANCE_COLUMNS,
     DriveUpload,
     _app_properties,
     _is_retryable,
@@ -147,12 +147,13 @@ def test_payload_hash_is_always_attached(drive_stub, evidence_file):
     assert drive_stub["created"][0]["appProperties"]["payload_hash"] == "a" * 64
 
 
-def test_evidence_table_gap_is_named_explicitly():
-    """The §7 fields the `evidence` table cannot hold. Documented rather than
-    silently worked around — closing it needs a migration and a decision."""
-    assert "source_reference" in EVIDENCE_TABLE_GAP
-    assert "prompt_version" in EVIDENCE_TABLE_GAP
-    assert "market" in EVIDENCE_TABLE_GAP
+def test_provenance_columns_are_written_to_both_stores():
+    """D-049 closed the gap these fields used to sit in: each is a column on
+    `evidence` (migration 0007) AND a Drive appProperty. Neither copy is
+    dropped — the row is queryable, the file stays self-describing."""
+    properties = _provenance(record())
+    for field in EVIDENCE_PROVENANCE_COLUMNS:
+        assert field in properties, f"§7 field {field} missing from Drive provenance"
 
 
 # ---------------------------------------------------------------------
@@ -264,3 +265,41 @@ def test_store_evidence_is_idempotent_on_observation_id(fake_db, drive_stub, evi
     store_evidence(fake_db, record(), evidence_file, "folder-1")
     store_evidence(fake_db, record(), evidence_file, "folder-1")
     assert len(fake_db.tables["evidence"]) == 1
+
+
+def test_store_evidence_writes_the_section_7_provenance_columns(
+    fake_db, drive_stub, evidence_file
+):
+    """D-049 / migration 0007: the database copy is the one an audit is
+    answered from, so it carries §7's provenance, not just the Drive file."""
+    store_evidence(fake_db, record(source_reference="resp_abc123"), evidence_file, "folder-1")
+    (row,) = fake_db.tables["evidence"]
+    assert row["prompt_version"] == "accommodation-th-en-v1.0"
+    assert row["provider"] == "openai"
+    assert row["model"] == "gpt-5.6"
+    assert row["tool_version"] == "web_search-1"
+    assert row["market"] == "TH"
+    assert row["language"] == "en"
+    assert row["source_reference"] == "resp_abc123"
+
+
+def test_stored_source_reference_is_not_truncated_like_the_drive_copy(
+    fake_db, drive_stub, evidence_file
+):
+    """Drive caps an appProperty at 124 bytes and the uploader trims to fit.
+    That is why D-049 makes the row authoritative: a long provider response id
+    or capture URL survives in the column but not in appProperties."""
+    long_reference = "https://example.com/capture?" + "x" * 400
+    store_evidence(fake_db, record(source_reference=long_reference), evidence_file, "folder-1")
+    (row,) = fake_db.tables["evidence"]
+    assert row["source_reference"] == long_reference
+    stored_on_drive = drive_stub["created"][0]["appProperties"]["source_reference"]
+    assert len(stored_on_drive) < len(long_reference)
+
+
+def test_every_provenance_column_reaches_the_row(fake_db, drive_stub, evidence_file):
+    """Guards the list itself: a §7 field added to EVIDENCE_PROVENANCE_COLUMNS
+    without a matching key in the upsert would otherwise pass unnoticed."""
+    store_evidence(fake_db, record(source_reference="resp_abc123"), evidence_file, "folder-1")
+    (row,) = fake_db.tables["evidence"]
+    assert set(EVIDENCE_PROVENANCE_COLUMNS) <= set(row)

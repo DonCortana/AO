@@ -457,6 +457,11 @@ def validate(db, values: list[list], *, context: dict[str, dict] | None = None) 
     already_labeled = {r["observation_id"] for r in existing}
 
     client_rows_seen: dict[str, int] = {}
+    # (observation_id, entity_name) -> sheet row that first claimed it.
+    # The database enforces this pair too (migration 0006, D-048), but a
+    # unique violation surfaces as a constraint name mid-insert; the sheet
+    # row number is what the labeler can act on.
+    entity_rows_seen: dict[tuple[str, str], int] = {}
 
     for row in rows:
         observation = by_id.get(row.observation_id)
@@ -508,6 +513,26 @@ def validate(db, values: list[list], *, context: dict[str, dict] | None = None) 
                 )
                 continue
             client_rows_seen[row.observation_id] = row.row_number
+
+        # D-048: one row per entity per observation. The same competitor
+        # entered at two ranks is a parse artifact, not two measurements —
+        # §4.1 RPV is a position value held by an entity in an observation, so
+        # the entity gets one row at its best (lowest) rank. Matched to the
+        # constraint exactly, on the raw strings: a check that normalised case
+        # or spacing would reject imports the database would accept.
+        previous = entity_rows_seen.get((row.observation_id, row.entity_name))
+        if previous is not None:
+            report.errors.append(
+                RowError(
+                    row.row_number,
+                    "entity_name",
+                    f"observation {row.observation_id} already has a row for "
+                    f"{row.entity_name!r} at sheet row {previous}; one row per "
+                    "entity per observation (D-048)",
+                )
+            )
+            continue
+        entity_rows_seen[(row.observation_id, row.entity_name)] = row.row_number
 
         report.valid.append(row)
 

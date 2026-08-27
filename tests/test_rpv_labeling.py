@@ -278,6 +278,47 @@ def test_competitor_rows_for_one_observation_are_allowed(labeled_db):
     assert len(report.valid) == 3
 
 
+def test_same_entity_twice_for_one_observation_is_rejected(labeled_db):
+    """D-048: one row per entity per observation. The same competitor entered
+    at two ranks used to pass validation and fail later on migration 0006's
+    unique constraint — a Postgres constraint name instead of a sheet row."""
+    db, ids = labeled_db["db"], labeled_db["ids"]
+    report = validate(
+        db,
+        [
+            header(),
+            row(ids[0], entity="Samujana", client="TRUE", rank=1),
+            row(ids[0], entity="Six Senses Samui", client="FALSE", rank=2),
+            row(ids[0], entity="Six Senses Samui", client="FALSE", rank=7),
+        ],
+    )
+    assert not report.ok
+    (error,) = report.errors
+    # Sheet row 4: header is row 1, so the second Six Senses row is the fourth.
+    assert error.row_number == 4
+    assert error.column == "entity_name"
+    assert "at sheet row 3" in error.message
+    assert "(D-048)" in error.message
+    # The first occurrence still stands — only the repeat is rejected.
+    assert [r.row_number for r in report.valid] == [2, 3]
+
+
+def test_same_entity_name_across_different_observations_is_allowed(labeled_db):
+    """The key is the pair. One competitor appearing in every observation of a
+    run is the normal case, not a duplicate."""
+    db, ids = labeled_db["db"], labeled_db["ids"]
+    report = validate(
+        db,
+        [
+            header(),
+            row(ids[0], entity="Six Senses Samui", client="FALSE", rank=2),
+            row(ids[1], entity="Six Senses Samui", client="FALSE", rank=2),
+        ],
+    )
+    assert report.ok, report.render()
+    assert len(report.valid) == 2
+
+
 def test_already_labelled_observation_is_refused(labeled_db):
     db, ids = labeled_db["db"], labeled_db["ids"]
     db.seed("recommendations", [{"observation_id": ids[0], "entity_name": "Samujana"}])
