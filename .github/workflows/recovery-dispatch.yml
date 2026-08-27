@@ -33,7 +33,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ATLAS_ENV: production
         run: |
-          echo "TODO(Week 3): python -c \"from atlas.reconciliation.reconcile import reconcile_run; print(reconcile_run('${{ inputs.run_plan_id }}'))\""
+          python -c "from atlas.reconciliation.reconcile import reconcile_run; print(reconcile_run('${{ inputs.run_plan_id }}'))"
 
       - name: Materialize Vertex AI service account credentials (D-029)
         run: |
@@ -51,4 +51,4 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ATLAS_ENV: production
         run: |
-          echo "TODO(Week 3): python -m atlas.runners.resume --run-plan-id ${{ inputs.run_plan_id }}"
+          python -m atlas.runners.resume --run-plan-id ${{ inputs.run_plan_id }}

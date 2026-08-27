@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from supabase import Client
+
 from atlas.db.client import get_db
 
 
@@ -29,7 +31,7 @@ class ReconciliationResult:
         return round(100 * self.completed_count / self.expected_count, 2)
 
 
-def reconcile_run(run_plan_id: str) -> ReconciliationResult:
+def reconcile_run(run_plan_id: str, *, db: Client | None = None) -> ReconciliationResult:
     """Requeue any 'planned'/'queued'/'running'/'retryable' task stuck past
     its expected window back to 'queued'. Never invents a completed record —
     a missing observation stays missing (and non-scoring) until it actually
@@ -38,8 +40,12 @@ def reconcile_run(run_plan_id: str) -> ReconciliationResult:
     Cycle completeness < 90% => Incomplete status, no movement verdict
     (Methodology §6.2). This function is what produces the completeness_pct
     that gate checks against.
+
+    `db` is injectable (defaults to the real Supabase client) so tests can
+    pass a fake double and exercise induced-failure/recovery scenarios
+    without touching the live database.
     """
-    db = get_db()
+    db = db or get_db()
     observations = (
         db.table("observations").select("task_id, status").eq("run_plan_id", run_plan_id).execute()
     )
