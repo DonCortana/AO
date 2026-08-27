@@ -8,6 +8,10 @@ parser later once it clears Execution Plan §10's >=95% accuracy gate — is
 deliberately invisible past this module, so the parser can be swapped in
 without the scoring math changing.
 
+Only Layer A observations are scored (D-043): `surface_layer = 'api'`. Layer B
+consumer-surface captures live in the same table and are read by
+`atlas.calibration`, never by this module.
+
 The load-bearing rule enforced here (D-034): a complete observation carrying
 *no* client recommendation row is "not yet parsed". It is excluded from the
 scoreable count and so counts against §6.2 completeness. It is never read as
@@ -19,6 +23,42 @@ from __future__ import annotations
 
 from atlas.adapters.base import OutcomeType
 from atlas.scoring.types import PeriodObservations, ReplicateObservation, rpv_for
+
+# Methodology §8.1 Layer A. Mirrors observations.surface_layer (migration
+# 0005). Defined here rather than imported from atlas.calibration so the
+# scoring package keeps no dependency on the calibration package.
+LAYER_API = "api"
+
+
+_MIGRATION_0005 = "migrations/0005_surface_layer_and_calibration_results.sql"
+
+
+def _select_api_layer(db, run_plan_id: str) -> list[dict]:
+    """Layer A observations for one run plan.
+
+    D-043: only Layer A (§8.1 controlled API benchmark) rows are ever scored.
+    A Layer B consumer capture carries the same `provider` value as its API
+    counterpart, so without this filter human captures would read as extra
+    replicates of the same platform and fold straight into a client-facing
+    AVS — inverting §8.3 and destroying the very comparison the §8.4 gate
+    exists to make, silently.
+
+    Written as a positive allowlist rather than a `!= 'consumer'` exclusion so
+    that any future third layer is excluded by default and must be admitted
+    deliberately.
+    """
+    return (
+        db.table("observations")
+        .select(
+            "id,provider,prompt_version_id,replicate_index,status,"
+            "grounding_status,surface_layer"
+        )
+        .eq("run_plan_id", run_plan_id)
+        .eq("surface_layer", LAYER_API)
+        .execute()
+        .data
+    )
+
 
 # Migration 0001 wrote these two names; Methodology §4.1 and OutcomeType use
 # the *_mention forms. Migration 0004 (D-035) aligns the constraint. Until it
@@ -59,18 +99,24 @@ def load_period(
     the row's own `outcome_type` and `rank`. It does not assign RPV — it
     catches a bad manual parse at the boundary instead of in a client report.
     """
-    observations = (
-        db.table("observations")
-        .select("id,provider,prompt_version_id,replicate_index,status,grounding_status")
-        .eq("run_plan_id", run_plan_id)
-        .execute()
-        .data
-    )
+    try:
+        observations = _select_api_layer(db, run_plan_id)
+    except Exception as exc:  # noqa: BLE001 — re-raised with actionable context
+        if "surface_layer" in str(exc):
+            raise ValueError(
+                "observations.surface_layer does not exist. Apply "
+                f"{_MIGRATION_0005} before scoring (D-043) — without it, Layer B "
+                "consumer captures cannot be told apart from Layer A replicates "
+                "and would fold into AVS."
+            ) from exc
+        raise
     if not observations:
         raise ValueError(f"run plan {run_plan_id!r} has no planned observations")
 
     # D-039: the planner writes the full task list before any provider call
-    # (Technical Lane step 3), so this denominator is fixed in advance.
+    # (Technical Lane step 3), so this denominator is fixed in advance. Since
+    # D-043 it is the run plan's *Layer A* task list — Layer B captures belong
+    # to their own run plan and are not part of an AVS completeness ratio.
     planned_count = len(observations)
 
     prompt_version_ids = sorted({o["prompt_version_id"] for o in observations})

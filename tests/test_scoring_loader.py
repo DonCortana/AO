@@ -43,6 +43,10 @@ def scoring_db(fake_db):
                 "replicate_index": index,
                 "status": "complete",
                 "grounding_status": "grounded",
+                # D-043: migration 0005 gives this column NOT NULL DEFAULT
+                # 'api', so every Layer A row carries it. The scoring loader
+                # filters on it — see test_consumer_layer_rows_are_never_scored.
+                "surface_layer": "api",
             }
         )
     fake_db.seed("observations", rows)

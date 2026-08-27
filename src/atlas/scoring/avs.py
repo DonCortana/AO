@@ -7,6 +7,14 @@
 
 Equal platform weighting is intentional (§4.3): "Equal weighting is
 intentionally preferred to unsupported pseudo-precision about market share."
+
+`compute_avs` is a pure function and takes its eligible-platform list
+explicitly, because G2 requires hand-calculated AVS values to be reproduced
+against the engine and that verification needs a kernel with no database in
+it. The *production* path is
+`atlas.calibration.scoring.compute_avs_for_property`, which sources the list
+from `calibration_results` per D-044. A hand-typed list is for verification,
+not for a client-facing score.
 """
 
 from __future__ import annotations
@@ -16,6 +24,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from atlas.scoring.types import ExcludedCounts, ReplicateObservation
+
+# D-042: Google Search AI Overviews has no API surface, so no Layer A leg can
+# exist for it and the §8.4 gate is undefined rather than failed. Duplicated
+# from atlas.calibration.run (rather than imported) to keep scoring free of
+# any dependency on the calibration package.
+CONSUMER_ONLY_PLATFORMS = frozenset({"google_ai"})
 
 # Methodology §4.4. Half-open intervals — see decision-register D-040 for why
 # the printed integer ranges are read this way. (lower_inclusive, label)
@@ -114,6 +128,17 @@ def compute_avs(
         )
     if len(set(eligible_platforms)) != len(eligible_platforms):
         raise ValueError(f"duplicate platform in eligible_platforms: {eligible_platforms!r}")
+    structural = sorted(set(eligible_platforms) & CONSUMER_ONLY_PLATFORMS)
+    if structural:
+        # D-042: these surfaces have no Layer A benchmark, so §8.4's gate is
+        # undefined for them and they can never be calibrated in v1.0. Enforced
+        # in the kernel as well as the gate, so a hand-typed verification list
+        # cannot reintroduce what the methodology structurally excludes.
+        raise ValueError(
+            f"platform(s) {structural} are consumer-surface only and have no "
+            "Layer A benchmark, so they can never pass the §8.4 calibration "
+            "gate and are excluded from AVS by structure (D-042)"
+        )
 
     eligible = set(eligible_platforms)
     scoreable = [o for o in observations if o.platform in eligible]

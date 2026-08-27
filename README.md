@@ -35,18 +35,32 @@ src/atlas/
     perplexity_adapter.py
     anthropic_adapter.py
   evidence/            SHA-256 hashing + Evidence Vault manifest
+    vault.py           hashing, manifest, Drive upload + evidence row write (OS §3, §7)
+    drive.py           Drive transport — resumable, retried, integrity-checked, idempotent
+  tools/               operator surfaces for the human-in-the-loop steps (OS §8)
+    sheets.py          thin Google Sheets client (service-account auth)
+    rpv_labeling.py    RPV labeling: export -> label -> validate -> import (D-034)
   costs/               cost ledger + budget rail (alert 80%, stop non-critical 100%)
   reconciliation/      expected-vs-completed check, requeue missing tasks
   scoring/             AVS (§4.3) + Atlas Readiness Score (§3.1) + movement verdict (§6.2)
     types.py           ReplicateObservation / PeriodObservations, §4.2 intent weights
-    loader.py          the engine's only input — the `recommendations` table (D-034)
+    loader.py          the engine's only input — the `recommendations` table (D-034),
+                       Layer A rows only (D-043)
     avs.py             PVS -> PlatformScore -> AVS, §4.4 visibility bands
     ars.py             (20*P2 + 15*P3 + 20*P4 + 15*P5) / 70, §3.1 readiness bands
     movement.py        hierarchical paired bootstrap, MRC 5.0, five-way verdict
     intervals.py       Wilson intervals, mention/top-3 rate, recommendation stability
+  calibration/         §8.4 calibration gate — Layer A vs Layer B, per platform
+    types.py           §8.4 thresholds, cell judgments, verdicts and pass routes
+    loader.py          builds cell judgments from both layers (D-043)
+    agreement.py       majority collapse (D-045), raw agreement, Cohen kappa, Spearman
+    gate.py            applies the §8.4 thresholds; the fallback route needs a human
+    store.py           writes `calibration_results`, emits the eligible-platform list
+    run.py             one calibration cycle end to end
+    scoring.py         the production AVS entry point — eligibility from the gate (D-044)
 
 migrations/            Supabase SQL migrations, RLS enabled from migration 0001
-                       0004 is written but NOT yet applied — see D-035
+                       0005 is written but NOT yet applied — see D-043, D-044
 .github/workflows/     scheduled + manual-dispatch recovery workflows
 ```
 

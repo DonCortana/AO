@@ -23,10 +23,24 @@ fake's matching on_conflict behaviour.
 
 from __future__ import annotations
 
+import itertools
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 import pytest
+
+# Every table in migration 0001 declares `created_at timestamptz not null
+# default now()`. The fake mirrors that so code which orders by created_at
+# (e.g. atlas.calibration.store.eligible_platforms picking the latest
+# calibration run) behaves here as it does against Postgres. Monotonic rather
+# than real-clock so ordering inside a test is deterministic.
+_CLOCK = itertools.count()
+_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _now() -> str:
+    return (_EPOCH + timedelta(seconds=next(_CLOCK))).isoformat()
 
 
 @dataclass
@@ -43,6 +57,7 @@ class _Query:
         self.op: str | None = None
         self.payload: dict | list[dict] | None = None
         self.on_conflict: str | None = None
+        self.order_by: tuple[str, bool] | None = None
 
     def select(self, cols: str) -> "_Query":
         self.op = self.op or "select"
@@ -55,6 +70,10 @@ class _Query:
 
     def in_(self, col: str, values) -> "_Query":
         self.filters.append((col, "in", list(values)))
+        return self
+
+    def order(self, col: str, desc: bool = False) -> "_Query":
+        self.order_by = (col, desc)
         return self
 
     def update(self, payload: dict) -> "_Query":
@@ -97,6 +116,9 @@ class _Query:
 
         if self.op in (None, "select"):
             matched = [r for r in rows if self._matches(r)]
+            if self.order_by is not None:
+                col, desc = self.order_by
+                matched = sorted(matched, key=lambda r: r.get(col), reverse=desc)
             return _Result([self._project(r) for r in matched])
 
         if self.op == "update":
@@ -111,6 +133,7 @@ class _Query:
             for p in payloads:
                 row = dict(p)
                 row.setdefault("id", str(uuid.uuid4()))
+                row.setdefault("created_at", _now())
                 rows.append(row)
                 created.append(row)
             return _Result([self._project(r) for r in created])
@@ -128,6 +151,7 @@ class _Query:
                 else:
                     row = dict(p)
                     row.setdefault("id", str(uuid.uuid4()))
+                    row.setdefault("created_at", _now())
                     rows.append(row)
                     results.append(row)
             return _Result([self._project(r) for r in results])
