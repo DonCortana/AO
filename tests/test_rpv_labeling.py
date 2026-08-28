@@ -54,8 +54,24 @@ def header():
 
 
 def row(observation_id, entity="Samujana", client="TRUE", outcome="ranked", rank=1,
-        provider="openai", layer="api", version="accommodation-th-en-v1.0", notes=""):
-    return [observation_id, provider, layer, version, entity, client, outcome, rank, notes]
+        provider="openai", layer="api", version="accommodation-th-en-v1.0", notes="",
+        prompt_text="", raw_response=""):
+    # Built by column name, not by position, so adding an exported context
+    # column to SHEET_COLUMNS cannot silently shift every value one cell left.
+    values = {
+        "observation_id": observation_id,
+        "provider": provider,
+        "surface_layer": layer,
+        "prompt_version": version,
+        "prompt_text": prompt_text,
+        "raw_response": raw_response,
+        "entity_name": entity,
+        "is_client_entity": client,
+        "outcome_type": outcome,
+        "rank": rank,
+        "notes": notes,
+    }
+    return [values[name] for name in SHEET_COLUMNS]
 
 
 @pytest.fixture

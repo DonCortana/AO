@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from atlas.adapters.base import OutcomeType
+from atlas.adapters.base import OutcomeType, response_text
 from atlas.config import get_settings
 from atlas.scoring.types import rpv_for
 from atlas.tools.sheets import batch_update, get_sheet_id, read_values, write_values
@@ -44,6 +44,7 @@ from atlas.tools.sheets import batch_update, get_sheet_id, read_values, write_va
 __all__ = [
     "OUTCOME_TYPES",
     "SHEET_COLUMNS",
+    "SHEET_LAST_COLUMN",
     "LabelRow",
     "LiveSchema",
     "RowError",
@@ -64,6 +65,13 @@ SHEET_COLUMNS: tuple[str, ...] = (
     "provider",
     "surface_layer",
     "prompt_version",
+    # Reading material, placed before the labeler-filled block so the row reads
+    # left-to-right: what was asked, what came back, then what you saw in it.
+    # Not written to the database and not tripwires (see CONTEXT_COLUMNS) —
+    # raw_response is far too long to compare cell-for-cell, and the labeler is
+    # expected to read it rather than preserve it.
+    "prompt_text",
+    "raw_response",
     "entity_name",
     "is_client_entity",
     "outcome_type",
@@ -73,6 +81,11 @@ SHEET_COLUMNS: tuple[str, ...] = (
 
 # Columns the labeler fills. The rest are exported context, and validate()
 # checks them back against the observation row to catch a mis-pasted id.
+# Last sheet column letter, derived so the read ranges cannot drift out of step
+# with SHEET_COLUMNS the way a hardcoded "A:I" did.
+_LAST_COLUMN = chr(ord("A") + len(SHEET_COLUMNS) - 1)
+SHEET_LAST_COLUMN = _LAST_COLUMN
+
 LABELER_COLUMNS = frozenset({"entity_name", "is_client_entity", "outcome_type", "rank", "notes"})
 CONTEXT_COLUMNS = frozenset({"provider", "surface_layer", "prompt_version"})
 
@@ -543,7 +556,13 @@ def _prompt_version_labels(db, observations: list[dict]) -> dict[str, dict]:
     ids = sorted({o["prompt_version_id"] for o in observations if o.get("prompt_version_id")})
     if not ids:
         return {}
-    versions = db.table("prompt_versions").select("id,version").in_("id", ids).execute().data
+    versions = (
+        db.table("prompt_versions")
+        .select("id,version,prompt_text")
+        .in_("id", ids)
+        .execute()
+        .data
+    )
     return {v["id"]: v for v in versions}
 
 
@@ -609,8 +628,48 @@ def unlabelled_observations(db, run_plan_ids: list[str]) -> list[dict]:
     return [o for o in complete if o["id"] not in labeled]
 
 
+# Google Sheets caps a single cell at 50,000 characters. A response above that
+# would fail the whole write, so it is truncated with a visible marker telling
+# the labeler where to read the untruncated text. Truncation is never silent:
+# a labeler who cannot see the end of a response must know to go elsewhere for
+# it rather than label what happens to fit.
+_MAX_CELL_CHARS = 49_000
+
+
+def _raw_responses(db, observations: list[dict]) -> dict[str, str]:
+    """observation_id -> the model's answer TEXT, fetched separately so
+    `unlabelled_observations` keeps its narrow selection.
+
+    `observations.raw_response` holds the whole provider response object
+    (choices, citations, search_results, usage). A Sheets cell must be a
+    scalar, so writing the structure straight in fails the whole batch with
+    "Invalid values" — and it would be unreadable to a labeler anyway. The
+    prose is extracted through the canonical
+    `atlas.adapters.base.response_text`, which is the only place that knows
+    the four adapters' payload shapes.
+    """
+    ids = sorted({o["id"] for o in observations})
+    if not ids:
+        return {}
+    rows = (
+        db.table("observations").select("id,raw_response").in_("id", ids).execute().data
+    )
+    return {r["id"]: response_text(r.get("raw_response")) for r in rows}
+
+
+def _fit_cell(text: str, observation_id: str) -> str:
+    if len(text) <= _MAX_CELL_CHARS:
+        return text
+    return (
+        text[:_MAX_CELL_CHARS]
+        + f"\n\n[TRUNCATED at {_MAX_CELL_CHARS} chars for the Sheets cell limit — "
+        f"read the full response from observations.raw_response where id={observation_id}]"
+    )
+
+
 def build_export_rows(db, observations: list[dict]) -> list[list]:
     versions = _prompt_version_labels(db, observations)
+    raw_responses = _raw_responses(db, observations)
     rows = [list(SHEET_COLUMNS)]
     for observation in sorted(
         observations, key=lambda o: (o.get("provider", ""), o.get("replicate_index", 0))
@@ -622,6 +681,8 @@ def build_export_rows(db, observations: list[dict]) -> list[list]:
                 observation.get("provider", ""),
                 observation.get("surface_layer", ""),
                 version.get("version", observation.get("prompt_version_id", "")),
+                version.get("prompt_text", ""),
+                _fit_cell(raw_responses.get(observation["id"], ""), observation["id"]),
                 "",  # entity_name — labeler fills
                 "",  # is_client_entity
                 "",  # outcome_type (dropdown)
@@ -691,7 +752,7 @@ def import_from_sheet(db, spreadsheet_id: str, tab: str, *, dry_run: bool = True
     and D-034 makes an unlabelled observation semantically different from an
     absent one — so a half-applied import is not a neutral state.
     """
-    values = read_values(spreadsheet_id, f"{tab}!A:I")
+    values = read_values(spreadsheet_id, f"{tab}!A:{_LAST_COLUMN}")
     report = validate(db, values)
     if not report.ok or dry_run or not report.valid:
         return report

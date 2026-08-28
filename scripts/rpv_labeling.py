@@ -26,6 +26,7 @@ import sys
 from atlas.db.client import get_db
 from atlas.tools.rpv_labeling import (
     OUTCOME_TYPES,
+    SHEET_LAST_COLUMN,
     export_to_sheet,
     import_from_sheet,
     read_values,
@@ -69,7 +70,7 @@ def main() -> int:
         return 0
 
     if args.command == "validate":
-        report = validate(db, read_values(args.sheet, f"{args.tab}!A:I"))
+        report = validate(db, read_values(args.sheet, f"{args.tab}!A:{SHEET_LAST_COLUMN}"))
         print(report.render())
         return 0 if report.ok else 1
 
