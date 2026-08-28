@@ -1,6 +1,10 @@
-# Frozen Core prompt set — Samujana — DRAFT
+# Frozen Core prompt set — Samujana
 
-**Status: DRAFT. Not written to `prompt_versions`. Not versioned. Not frozen.**
+**Status: SEEDED, not yet frozen.** Written to `prompt_versions` on 2026-08-28
+as version `frozen-core-samujana-v1` — 10 rows, `set_type='frozen_core'`,
+market TH/en, `is_holdout=false` on all ten. §7 locks intent, entity, tier and
+set membership the moment a baseline runs against these rows; no baseline has
+run yet, so the set is seeded but not yet frozen.
 
 Fresh draft — there was no prior draft set in the repo, in git history or in
 Drive, so nothing here is a revision of earlier text. D-051's "Replaces draft
@@ -18,9 +22,9 @@ does not exist as an artifact; this file is written to D-051's *constraint*
 | Prompt count | 10 (§7 allows 8–12 by profile) |
 | Competitor set | D-051 |
 
-Once agreed, each row below becomes one `prompt_versions` row:
-`set_type='frozen_core'`, `version=<agreed>`, `prompt_text`, `intent_tier`,
-`market_id` as above, `is_holdout=false`.
+Each row below is one `prompt_versions` row, written on 2026-08-28:
+`set_type='frozen_core'`, `version='frozen-core-samujana-v1'`, `prompt_text`,
+`intent_tier`, `market_id` as above, `is_holdout=false`.
 
 **§7 immutability:** the moment a baseline runs against these, intent, entity,
 tier and set membership are locked — changing any of them requires a major
@@ -142,7 +146,10 @@ cap is not what limits D here.
 
 ---
 
-## Open items for review
+## Review items — all resolved
+
+All five items raised against this set before seeding are closed. Kept here as
+the record of what was decided and why, not as an outstanding checklist.
 
 1. **D1 will almost certainly be flagged non-diagnostic.** §7 flags any prompt
    returning the client in >90% of baseline replicates across every eligible
@@ -151,16 +158,31 @@ cap is not what limits D here.
    §7 flag is intended to apply to Tier D at all, or whether D1 should be
    reframed as navigational (e.g. booking/contact routing) rather than recall.
    This is a methodology question, not a wording fix.
+   — **Resolved by D-055:** §7's 90%-non-diagnostic flag is scoped to Tiers
+   A–C only. Tier D is branded/navigational by design and expected to return
+   the client near-100% of baseline replicates; exempt by definition, not a
+   gate failure. D1 stands as written.
 
 2. **A2 and C2 constrain on capacity** (eight guests / ~40 wedding guests).
    Confirm those numbers match what Samujana can actually host — a prompt whose
    constraint the client fails is measuring the wrong thing.
+   — **Resolved — operator (Doud) confirmed** against Samujana's own site:
+   8 adults / 4-bedroom matches exactly; ~40 guests fits within Little Lawn
+   (2–50) / Private Villas (6–80) event capacity ranges. Operator confirmation,
+   not independently verified by Claude Code.
 
 3. **November in A1** dates the prompt. §7 makes it immutable between baseline
    and validation, so it will still say November at the next validation cycle.
    Either accept that as a fixed instrument or drop the month.
+   — **Resolved:** the month was dropped before seeding. A1 now reads "for a
+   week's stay", so the instrument carries no calendar reference to go stale
+   between baseline and validation.
 
 4. **Tier split 3/3/3/1** is a choice, not a requirement. 3/3/2/2 is equally
    compliant and gives branded/navigational a second reading.
+   — **Resolved:** kept at 3/3/3/1. No change made; the alternative was
+   considered and not adopted. Branded share is 4.00% against the §4.2 cap
+   of 15% (see above), so nothing forced the change.
 
 5. **Version string** not set. Needs agreeing before these become rows.
+   — **Resolved:** `frozen-core-samujana-v1`, as seeded on 2026-08-28.
