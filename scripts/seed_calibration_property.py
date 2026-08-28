@@ -12,7 +12,8 @@ draft set would either freeze the draft or force a rebaseline to correct it.
 Seed prompts in a separate step, once the text is agreed.
 
     python scripts/seed_calibration_property.py --dry-run   # default
-    python scripts/seed_calibration_property.py --commit
+    python scripts/seed_calibration_property.py \
+        --gbp-url 'https://maps.google.com/?cid=...' --commit
 
 --------------------------------------------------------------------------
 PROPERTY CATEGORY — verification result, read before changing
@@ -50,9 +51,10 @@ CALIBRATION_CATEGORY = "Villa/Estate"
 CALIBRATION_WEBSITE_URL = "https://www.samujana.com"
 
 # §8.4 makes a Google Business Profile one of the four selection criteria, so
-# this must be the real profile URL before the calibration is run. Left unset
-# rather than guessed — the script refuses to commit without it.
-CALIBRATION_GBP_URL: str | None = None
+# the real profile URL must be supplied before the calibration is run. Passed
+# with --gbp-url rather than held as a constant here: it is a per-property
+# fact, and a commit without it is refused rather than defaulted (see seed()).
+# For Samujana the confirmed value is recorded as decision-register D-052.
 
 # Execution Plan §4: "Use one primary market/language for the first
 # calibration." Thailand / English.
@@ -83,11 +85,11 @@ def _lookup_or_create(db, table: str, filters: dict, payload: dict, *, commit: b
     return created
 
 
-def seed(*, commit: bool) -> dict:
-    if commit and not CALIBRATION_GBP_URL:
+def seed(*, commit: bool, gbp_url: str | None = None) -> dict:
+    if commit and not gbp_url:
         raise SystemExit(
-            "CALIBRATION_GBP_URL is unset. Methodology §8.4 requires the "
-            "calibration property to have a Google Business Profile; fill in "
+            "--gbp-url is required with --commit. Methodology §8.4 requires "
+            "the calibration property to have a Google Business Profile; pass "
             "the real URL rather than committing the row without it."
         )
 
@@ -112,7 +114,7 @@ def seed(*, commit: bool) -> dict:
             "name": CALIBRATION_PROPERTY_NAME,
             "category": CALIBRATION_CATEGORY,
             "website_url": CALIBRATION_WEBSITE_URL,
-            "google_business_profile_url": CALIBRATION_GBP_URL,
+            "google_business_profile_url": gbp_url,
             # Execution Plan §3: System Zero tests engineering only and never
             # performs hospitality calibration. These two flags are mutually
             # exclusive by design.
@@ -154,5 +156,11 @@ if __name__ == "__main__":
         action="store_true",
         help="actually write rows (default is a dry run that writes nothing)",
     )
+    parser.add_argument(
+        "--gbp-url",
+        default=None,
+        help="Google Business Profile URL for the property (§8.4 selection "
+             "criterion). Required with --commit.",
+    )
     args = parser.parse_args()
-    seed(commit=args.commit)
+    seed(commit=args.commit, gbp_url=args.gbp_url)
