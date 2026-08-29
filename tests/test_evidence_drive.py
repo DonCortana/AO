@@ -8,6 +8,8 @@ point at nothing.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, timezone
 
 import pytest
@@ -24,6 +26,8 @@ from atlas.evidence.drive import (
 from atlas.evidence.vault import (
     EvidenceRecord,
     _provenance,
+    hash_payload,
+    sha256_file,
     store_evidence,
     upload_to_drive,
 )
@@ -94,6 +98,46 @@ def _drive_folder(monkeypatch):
     monkeypatch.setattr(
         vault, "get_settings", lambda: type("S", (), {"google_drive_evidence_folder_id": "folder-1"})()
     )
+
+
+# ---------------------------------------------------------------------
+# payload hashing
+# ---------------------------------------------------------------------
+
+
+def test_sha256_file_hashes_the_bytes_on_disk(tmp_path):
+    path = tmp_path / "capture.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"pixels" * 100)
+    assert sha256_file(str(path)) == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_sha256_file_streams_past_the_block_boundary(tmp_path):
+    """Read in 1 MiB blocks. A file larger than one block is the case that
+    catches a digest fed only its first chunk — and a full-page screenshot
+    clears 1 MiB easily."""
+    payload = b"\xde\xad\xbe\xef" * (512 * 1024)  # 2 MiB, two blocks
+    path = tmp_path / "big.png"
+    path.write_bytes(payload)
+    assert sha256_file(str(path)) == hashlib.sha256(payload).hexdigest()
+
+
+def test_hash_payload_cannot_hash_binary_evidence():
+    """Why sha256_file exists. A screenshot has no dict form, so hash_payload's
+    json.dumps raises rather than hashing it. Binary evidence must reach
+    evidence.payload_hash (NOT NULL) through sha256_file."""
+    with pytest.raises(TypeError):
+        hash_payload(b"\x89PNG\r\n\x1a\n\xff\xd8\xff")
+
+
+def test_the_two_hashes_are_one_primitive_over_different_inputs(tmp_path):
+    """hash_payload is SHA-256 over the canonical JSON encoding, so a file
+    holding exactly those bytes hashes identically. The functions differ in
+    what they accept, not in the digest they compute — which is why an
+    artifact hashed under the wrong one is silently wrong, not an error."""
+    payload = {"b": 2, "a": 1}
+    path = tmp_path / "response.json"
+    path.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    assert sha256_file(str(path)) == hash_payload(payload)
 
 
 # ---------------------------------------------------------------------

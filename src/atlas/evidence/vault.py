@@ -25,9 +25,36 @@ from atlas.evidence.drive import file_md5, upload_file
 
 def hash_payload(payload: dict) -> str:
     """SHA-256 of the canonical JSON payload. Deterministic key ordering so
-    the same logical response always hashes identically."""
+    the same logical response always hashes identically.
+
+    Takes a dict. Binary evidence goes through `sha256_file` instead — see
+    the contract there."""
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: str) -> str:
+    """SHA-256 of a file's raw bytes, read in 1 MiB blocks.
+
+    The companion to `hash_payload`, and the two are not interchangeable.
+    `hash_payload` hashes a **dict** through its canonical JSON encoding,
+    which is what an API provider's response goes through. `sha256_file`
+    hashes **the bytes on disk**, exactly as stored.
+
+    Binary evidence requires this one. A screenshot of a consumer surface has
+    no dict form at all, so `hash_payload` raises on it rather than hashing
+    it — Layer B captures (Operating System §7's human-capture evidence) must
+    use `sha256_file`.
+
+    Both produce what `evidence.payload_hash` holds, which is NOT NULL. The
+    choice between them is per-artifact and belongs to the caller, which is
+    the only party that knows whether it captured a response or a file.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 @dataclass

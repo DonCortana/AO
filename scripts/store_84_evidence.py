@@ -9,21 +9,20 @@ preference. See the report for the full list.
     which never matches on NULL, so it is NOT idempotent here — we guard on
     payload_hash ourselves before calling it.
   * run_id is None: there is no run. The column is nullable text (no FK).
-  * payload_hash is SHA-256 of the FILE BYTES. vault.hash_payload() takes a
-    dict and cannot hash a PNG.
+  * payload_hash is SHA-256 of the FILE BYTES, via vault.sha256_file():
+    vault.hash_payload() takes a dict and cannot hash a PNG.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 
 from atlas.db.client import get_db
-from atlas.evidence.vault import EvidenceRecord, store_evidence
+from atlas.evidence.vault import EvidenceRecord, sha256_file, store_evidence
 
 # Artifact paths are resolved against the repo root, not the working
 # directory, so this runs the same from anywhere.
@@ -31,14 +30,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PROPERTY_ID = "df2e65c5-190c-4879-88b4-78557176ef4e"
 MARKET, LANGUAGE = "TH", "en"
-
-
-def sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def captured_at(path: str) -> datetime:
