@@ -234,6 +234,10 @@ class LabelRow:
     provider: str = ""
     surface_layer: str = ""
     prompt_version: str = ""
+    # The response the label is a reading OF. Carried so validate() can check
+    # the label against the text it claims to describe — see
+    # _content_mismatch. Never part of to_recommendation().
+    raw_response: str = ""
 
     def to_recommendation(self) -> dict:
         """The `recommendations` payload for this label.
@@ -417,6 +421,7 @@ def parse_sheet(values: list[list]) -> tuple[list[LabelRow], list[RowError], int
                 provider=get("provider"),
                 surface_layer=get("surface_layer"),
                 prompt_version=get("prompt_version"),
+                raw_response=get("raw_response"),
             )
         )
 
@@ -512,6 +517,13 @@ def validate(db, values: list[list], *, context: dict[str, dict] | None = None) 
             )
             continue
 
+        content_problem = _content_mismatch(row)
+        if content_problem:
+            report.errors.append(
+                RowError(row.row_number, "entity_name", content_problem)
+            )
+            continue
+
         if row.is_client_entity:
             previous = client_rows_seen.get(row.observation_id)
             if previous is not None:
@@ -558,12 +570,79 @@ def _prompt_version_labels(db, observations: list[dict]) -> dict[str, dict]:
         return {}
     versions = (
         db.table("prompt_versions")
-        .select("id,version,prompt_text")
+        .select("id,version,prompt_text,intent_tier")
         .in_("id", ids)
         .execute()
         .data
     )
     return {v["id"]: v for v in versions}
+
+
+# Outcomes that assert the entity WAS named in the response. `absent` asserts
+# the opposite and is checked the other way. `entity_conflict` is deliberately
+# not checked at all: §4.1 defines it as a wrong entity or name collision, so
+# the labeler's entity_name may legitimately differ from the text.
+_MENTION_OUTCOMES = frozenset(
+    {
+        OutcomeType.RANKED.value,
+        OutcomeType.UNORDERED_POSITIVE.value,
+        OutcomeType.SOURCE_ONLY_MENTION.value,
+        OutcomeType.NEGATIVE_MENTION.value,
+    }
+)
+
+ABSENT = OutcomeType.ABSENT.value
+
+
+def _content_mismatch(row: LabelRow) -> str | None:
+    """Does the label agree with the response text on its own row?
+
+    The tripwire in `_context_mismatches` catches an observation_id pasted from
+    the wrong line only when provider/surface_layer/prompt_version differ. On a
+    single-provider, single-prompt-set run plan those three are identical on
+    every row, so that check cannot fire and a whole sheet can be labelled
+    against the wrong rows while validating clean.
+
+    This check closes that hole using the one column that IS unique per row:
+    the response the label is supposed to be a reading of. A `ranked` label for
+    an entity whose name appears nowhere in that response is either a
+    mis-pasted id or a mis-typed name, and both are labelling errors.
+
+    Substring, case-insensitive, on the raw strings — the same deliberately
+    unnormalised comparison used for the D-048 duplicate check. It is a
+    coarse net on purpose: it catches the systematic failure (an entire block
+    of labels sitting against the wrong observations) without trying to
+    adjudicate paraphrase, which a human labeler is better at than a
+    substring test.
+
+    Returns None when there is nothing to check — a blank raw_response cell
+    (the labeler is free to clear their reference columns, per the
+    _context_mismatches precedent) or an outcome this rule does not cover.
+    """
+    response = row.raw_response.lower()
+    if not response or not row.entity_name:
+        return None
+
+    present = row.entity_name.lower() in response
+
+    if row.outcome_type in _MENTION_OUTCOMES and not present:
+        return (
+            f"outcome_type {row.outcome_type!r} says {row.entity_name!r} was "
+            "named in this response, but that text does not appear anywhere in "
+            "this row's raw_response. Either the observation_id belongs to a "
+            "different row or the entity name is mistyped — check before "
+            "importing, because the label would attach cleanly to the wrong "
+            "observation"
+        )
+
+    if row.outcome_type == ABSENT and present:
+        return (
+            f"outcome_type 'absent' says {row.entity_name!r} was not named, but "
+            "that text does appear in this row's raw_response. An absent label "
+            "on a response that names the entity scores a real mention as 0.00"
+        )
+
+    return None
 
 
 def _context_mismatches(row: LabelRow, observation: dict, context: dict[str, dict]) -> str:
@@ -611,6 +690,15 @@ def unlabelled_observations(db, run_plan_ids: list[str]) -> list[dict]:
         db.table("observations")
         .select("id,provider,surface_layer,prompt_version_id,status,replicate_index")
         .in_("run_plan_id", run_plan_ids)
+        # Explicit and deterministic. Without an ORDER BY the database returns
+        # rows in unspecified order, and build_export_rows' sort key
+        # (provider, replicate_index) does not mention prompt_version_id — so
+        # for a single-provider run plan the sheet came out grouped by
+        # REPLICATE, interleaving all ten prompts, with the order inside each
+        # replicate block left to the database. A labeler reading top to bottom
+        # then sees a different prompt on every row.
+        .order("prompt_version_id")
+        .order("replicate_index")
         .execute()
         .data
     )
@@ -671,9 +759,21 @@ def build_export_rows(db, observations: list[dict]) -> list[list]:
     versions = _prompt_version_labels(db, observations)
     raw_responses = _raw_responses(db, observations)
     rows = [list(SHEET_COLUMNS)]
-    for observation in sorted(
-        observations, key=lambda o: (o.get("provider", ""), o.get("replicate_index", 0))
-    ):
+    # Tier first (Methodology §4.1 weights intents A-D, and a labeler reads
+    # the sheet in that order), then prompt_version_id and replicate_index to
+    # keep each prompt's replicates together, then provider only to make ties
+    # within one prompt/replicate deterministic — none of the three leading
+    # keys distinguish providers of the same prompt version.
+    def _sort_key(o: dict) -> tuple:
+        version = versions.get(o.get("prompt_version_id"), {})
+        return (
+            version.get("intent_tier", ""),
+            o.get("prompt_version_id", ""),
+            o.get("replicate_index", 0),
+            o.get("provider", ""),
+        )
+
+    for observation in sorted(observations, key=_sort_key):
         version = versions.get(observation.get("prompt_version_id"), {})
         rows.append(
             [

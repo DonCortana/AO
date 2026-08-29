@@ -57,7 +57,9 @@ class _Query:
         self.op: str | None = None
         self.payload: dict | list[dict] | None = None
         self.on_conflict: str | None = None
-        self.order_by: tuple[str, bool] | None = None
+        # A list, not a single tuple: PostgREST allows chained .order()
+        # calls and applies them left to right as successive sort keys.
+        self.order_by: list[tuple[str, bool]] = []
 
     def select(self, cols: str) -> "_Query":
         self.op = self.op or "select"
@@ -73,7 +75,7 @@ class _Query:
         return self
 
     def order(self, col: str, desc: bool = False) -> "_Query":
-        self.order_by = (col, desc)
+        self.order_by.append((col, desc))
         return self
 
     def update(self, payload: dict) -> "_Query":
@@ -116,9 +118,20 @@ class _Query:
 
         if self.op in (None, "select"):
             matched = [r for r in rows if self._matches(r)]
-            if self.order_by is not None:
-                col, desc = self.order_by
-                matched = sorted(matched, key=lambda r: r.get(col), reverse=desc)
+            # Applied in reverse with a stable sort, so the first .order()
+            # call is the primary key. A missing/NULL column sorts last and
+            # never gets compared against a value of another type — Postgres
+            # sorts NULLS LAST on ASC, and a test double that raised
+            # TypeError here would fail on data the real database accepts.
+            for col, desc in reversed(self.order_by):
+                matched = sorted(
+                    matched,
+                    key=lambda r, c=col: (
+                        r.get(c) is None,
+                        r.get(c) if r.get(c) is not None else 0,
+                    ),
+                    reverse=desc,
+                )
             return _Result([self._project(r) for r in matched])
 
         if self.op == "update":
