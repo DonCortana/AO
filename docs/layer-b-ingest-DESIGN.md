@@ -147,11 +147,29 @@ rather than duplicates. A human pipeline *will* be re-run after mistakes;
 idempotency is not optional.
 
 ```
-consumer:{run_plan_id}:{prompt_version_id}:{replicate_index}
+consumer:{run_plan_id}:{provider}:{prompt_version_id}:{replicate_index}
 ```
 
 Ingest upserts on `task_id`. Re-running a capture for one cell overwrites that
 cell and nothing else.
+
+**Why `provider` is in the key.** The measurement unit is the cell
+`(prompt_version_id, provider)` — that is what `atlas.calibration.agreement`
+pairs on, and it is why §2's frame is ten cells per platform rather than ten
+overall. Two surfaces answering the same prompt are two measurements, not one
+measured twice. Omit `provider` and they synthesise the same `task_id`; since
+ingest upserts on it, the second capture would overwrite the first with no
+error and no trace — a lost measurement that looks exactly like a cell that
+was never captured. `planner.deterministic_task_id` includes provider for the
+same reason, and this scheme matches it on that point while staying readable
+rather than hashed, so an operator reconciling a sheet against the database
+can see which cell an id names.
+
+The ingest tool still refuses two sheet rows that synthesise one `task_id`
+(§6). With provider in the key that is no longer a cross-surface collision but
+a plain operator duplicate — the same cell entered twice, usually a copied row
+whose `replicate_index` was never advanced — and it is caught at validate
+rather than absorbed by the upsert.
 
 ## 5. Write contract, column by column
 
