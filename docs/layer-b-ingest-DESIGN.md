@@ -325,22 +325,24 @@ on the agreement frame, which is the intended behaviour, not a gap.
    provider or layer; a consumer run plan is an ordinary row. Records that
    D-056's flag was upstream-only and that `run_gate` was never missing an
    argument.
-2. **`model` literal for consumer surfaces.** The per-surface value and its
-   meaning.
-3. **§6.1's run window does not bind Layer B.** A human capture campaign spans
-   days by design; §6.1 governs the API instrument. Distinct from D-058, which
-   accepted a deviation for an API run.
+2. ~~`model` literal for consumer surfaces.~~ **Registered as D-060.**
+3. ~~§6.1's run window does not bind Layer B.~~ **Registered as D-061.**
 4. **`task_id` synthesis and upsert idempotency** for human-originated
    observations.
 5. **Automation posture (from tonight's sidenote).** Manual capture retained;
    assisted-capture tooling permitted; the automation clause is load-bearing
    for D-042 and any change is a §10 change-control matter.
-6. **Promote a `sha256_file` helper into `atlas/evidence/vault.py`.**
-   `hash_payload` takes a dict and canonical-JSON-encodes it; it cannot hash a
-   screenshot, and `evidence.payload_hash` is NOT NULL.
-   `scripts/store_84_evidence.py` already carries a private copy for exactly
-   this reason. Layer B evidence is binary by definition, so the helper should
-   live in the vault beside `hash_payload` rather than be copied a third time.
+6. ~~Promote a `sha256_file` helper into `atlas/evidence/vault.py`.~~
+   **Done.** `vault.sha256_file` is public beside `hash_payload`; the
+   private copy in `scripts/store_84_evidence.py` was removed. Standing
+   rule: any binary evidence (screenshots) is hashed via `sha256_file`,
+   never `hash_payload` — `hash_payload` will accept a mismatched-shape
+   argument and return a valid-looking hash rather than erroring, so the
+   failure mode is silent, not loud.
+7. **Replicate independence for Layer B capture.** Fresh incognito
+   session per replicate; logged out; no persisted personalisation. Not
+   originally identified as a DESIGN-doc gap — surfaced during decision
+   drafting. **Registered as D-059.**
 
 ## 9. Verify before implementing
 
