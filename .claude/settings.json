@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git add -A:*)",
+      "Bash(git add --all:*)",
+      "Bash(git add .:*)",
+      "Bash(git add -u:*)",
+      "Bash(git commit -a:*)",
+      "Bash(git commit -am:*)",
+      "Bash(git commit --all:*)",
+      "Bash(git clean:*)",
+      "Bash(git checkout -- .:*)",
+      "Bash(git checkout .:*)",
+      "Bash(git restore .:*)",
+      "Bash(git restore --staged .:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git stash -u:*)",
+      "Bash(git stash -a:*)",
+      "Bash(git stash --include-untracked:*)",
+      "Bash(git stash --all:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)"
+    ]
+  }
+}
