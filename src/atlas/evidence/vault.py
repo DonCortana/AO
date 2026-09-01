@@ -202,3 +202,71 @@ def store_evidence(db, record: EvidenceRecord, local_path: str, folder_id: str |
         on_conflict="observation_id",
     ).execute()
     return storage_path
+
+
+# Operating System §7 / D-049: what an evidence row must carry before the
+# observation it belongs to may be called complete. `storage_path` is the
+# load-bearing one — without it the row asserts that evidence exists while
+# pointing at nothing.
+REQUIRED_EVIDENCE_FIELDS = (
+    "storage_path",
+    "payload_hash",
+    "provider",
+    "model",
+    "prompt_version",
+)
+
+
+def freeze_gate_violations(db, run_plan_id: str) -> list[dict]:
+    """Score-bearing observations that reached 'complete' without real evidence.
+
+    The v1.0-MVP "Evidence integrity" freeze gate, as a query: *all production
+    observations enter through the Evidence Vault path with complete
+    provenance*. Returns one entry per offending observation, naming what is
+    missing, so a failure says which row and which column rather than just
+    "gate failed".
+
+    **Scoped to one run plan, deliberately.** The gate is forward-only. 67
+    observations completed before Phase A carry `storage_path = NULL` and no
+    provenance, because the runner wrote the evidence row directly instead of
+    going through this module; they are a historical fact, not a regression,
+    and are not backfilled. Scoping by run plan rather than by a `created_at`
+    cutoff means the check has no clock in it: CI creates a run plan, runs it,
+    and asserts that *that* plan is clean, which stays true whenever it runs.
+
+    Only 'complete' is gated. A 'failed' or 'excluded' observation is never
+    scored, so it has nothing to be reproducible about.
+    """
+    observations = (
+        db.table("observations")
+        .select("id, task_id, status")
+        .eq("run_plan_id", run_plan_id)
+        .eq("status", "complete")
+        .execute()
+        .data
+    )
+    if not observations:
+        return []
+
+    evidence_by_observation = {
+        row["observation_id"]: row
+        for row in db.table("evidence").select("*").execute().data
+        if row.get("observation_id")
+    }
+
+    violations = []
+    for observation in observations:
+        evidence = evidence_by_observation.get(observation["id"])
+        if evidence is None:
+            missing = ["evidence row"]
+        else:
+            missing = [f for f in REQUIRED_EVIDENCE_FIELDS if not evidence.get(f)]
+        if missing:
+            violations.append(
+                {
+                    "observation_id": observation["id"],
+                    "task_id": observation["task_id"],
+                    "missing": missing,
+                }
+            )
+    return violations

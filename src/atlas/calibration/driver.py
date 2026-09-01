@@ -390,10 +390,12 @@ def plan_calibration_run(
     baseline is a deliberate act, not the accidental result of running a
     command twice."
 
-    `planner` is injectable purely for testing. `plan_run` calls `get_db()`
-    itself and takes no `db` (§1, §5 q3), so without this seam these tests
-    could only reach it by patching the module. Changing `plan_run`'s own
-    signature is a change to a shared component and is not proposed here.
+    `planner` is injectable purely for testing, so these tests can assert on
+    what the driver asks the planner for without writing observations. (Phase
+    A later added an optional keyword-only `db` to `plan_run` as well, so its
+    own insert-missing-only behaviour could be tested directly; this seam
+    remains the right one for driver-level tests, which care about the call,
+    not the write.)
     """
     providers_t = tuple(providers) if providers is not None else DEFAULT_PROVIDERS
     prompt_ids_t = tuple(prompt_version_ids)
@@ -452,8 +454,9 @@ def plan_calibration_run(
     if existing is not None:
         notes.append(
             f"reusing existing run plan {existing['id']} "
-            f"(status={existing.get('status')!r}); plan_run's upsert on task_id "
-            "absorbs the repeat rather than planning a duplicate set."
+            f"(status={existing.get('status')!r}); plan_run is "
+            "insert-missing-only on task_id, so the repeat adds only absent "
+            "rows and leaves executed ones untouched."
         )
     elif new_plan:
         notes.append(

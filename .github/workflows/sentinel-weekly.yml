@@ -8,9 +8,14 @@
 
 name: Sentinel Weekly
 
+# SCHEDULE DISABLED (Action Plan v2.0 Phase A). There is no
+# atlas.runners.sentinel yet, so a scheduled run could only report success for
+# work that did not happen. The cron below is retained, commented, so it can be
+# restored in the same commit that lands the real runner.
+#
+#  schedule:
+#    - cron: "37 8 * * 1" # Monday 08:37 UTC
 on:
-  schedule:
-    - cron: "37 8 * * 1" # Monday 08:37 UTC
   workflow_dispatch: {} # manual recovery path required for every scheduled workflow (Operating System §4)
 
 jobs:
@@ -43,9 +48,13 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ATLAS_ENV: production
         run: |
-          echo "TODO(post-Week 1): python -m atlas.runners.sentinel"
+          echo "::error::atlas.runners.sentinel is not implemented. This workflow"
+          echo "::error::fails deliberately rather than reporting success for work"
+          echo "::error::that did not happen (Phase A: green must mean executed)."
+          exit 1
 
       - name: Reconcile
         if: always()
         run: |
-          echo "TODO: python -m atlas.reconciliation.reconcile --run-type sentinel --window 24h"
+          echo "::error::The sentinel reconcile entry point is not implemented."
+          exit 1

@@ -44,5 +44,9 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ATLAS_ENV: production
         run: |
-          echo "TODO(Week 1): python -m atlas.runners.system_zero --property-id ${{ inputs.property_id }}"
-          echo "Acceptance criteria live in docs/atlas-execution-plan-v1.0.md §3 — do not mark this workflow done until every row in that table passes."
+          echo "::error::atlas.runners.system_zero is not implemented. This workflow"
+          echo "::error::fails deliberately rather than reporting success for work"
+          echo "::error::that did not happen (Phase A: green must mean executed)."
+          echo "::error::Acceptance criteria: docs/atlas-execution-plan-v1.0.md §3 —"
+          echo "::error::do not mark this workflow done until every row there passes."
+          exit 1

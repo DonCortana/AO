@@ -34,6 +34,29 @@ dev = [
     "psycopg2-binary>=2.9",
 ]
 
+# Pinned explicitly rather than left to ruff's defaults. Ruff changes which
+# rules are on by default between releases, and an unpinned selection means a
+# routine ruff upgrade turns a green required check red on code nobody
+# touched. The version itself is pinned in requirements-dev.txt — this is the
+# other half of the same "pin, don't float" rule (Phase A spec §6).
+#
+# Scope is deliberately correctness-first rather than style-first: this gate
+# went in alongside Phase A, and a selection that demanded a repo-wide
+# restyle would have buried the engine-safety diff in unrelated churn.
+# Widening it later is a standalone change with its own review.
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E4", "E7", "E9",  # pycodestyle correctness subset (not E5 line length)
+    "F",               # pyflakes
+    "I",               # import sorting
+    "B",               # bugbear
+    "BLE",             # blind except — resume.py's fail-closed catch is a deliberate noqa
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

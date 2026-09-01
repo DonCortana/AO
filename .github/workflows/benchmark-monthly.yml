@@ -5,9 +5,14 @@
 
 name: Benchmark Monthly
 
+# SCHEDULE DISABLED (Action Plan v2.0 Phase A). There is no
+# atlas.runners.benchmark_monthly yet, so a scheduled run could only report
+# success for work that did not happen. The cron below is retained, commented,
+# so it can be restored in the same commit that lands the real runner.
+#
+#  schedule:
+#    - cron: "17 9 1 * *" # 1st of month, 09:17 UTC
 on:
-  schedule:
-    - cron: "17 9 1 * *" # 1st of month, 09:17 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -40,9 +45,13 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ATLAS_ENV: production
         run: |
-          echo "TODO(post-Week 1): python -m atlas.runners.benchmark_monthly"
+          echo "::error::atlas.runners.benchmark_monthly is not implemented. This"
+          echo "::error::workflow fails deliberately rather than reporting success"
+          echo "::error::for work that did not happen (Phase A: green means executed)."
+          exit 1
 
       - name: Reconcile
         if: always()
         run: |
-          echo "TODO: python -m atlas.reconciliation.reconcile --run-type benchmark_monthly --window 24h"
+          echo "::error::The benchmark reconcile entry point is not implemented."
+          exit 1

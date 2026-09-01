@@ -14,11 +14,23 @@ guarantees actually depend on (confirmed against the installed `postgrest`
   - upsert(on_conflict=...) merges into the existing row on a conflict
     instead of erroring or duplicating.
 
+  - upsert(ignore_duplicates=True) sends `resolution=ignore-duplicates`,
+    which PostgREST turns into ON CONFLICT DO NOTHING — the existing row is
+    neither updated nor returned. atlas.planner.run_planner depends on this.
+  - rpc("claim_task", ...) is emulated in _RpcCall, predicate for predicate
+    against the migration 0009 function.
+
 Not a Postgres emulator — no transactions, no real concurrency. Good enough
 to prove the application-level idempotency logic in resume.py/reconcile.py
 is wired correctly; the actual once-only guarantee for evidence/costs comes
 from the unique constraint in migrations/0003, exercised here only via this
 fake's matching on_conflict behaviour.
+
+**The concurrency guarantees are not testable here and are not tested here.**
+FOR UPDATE SKIP LOCKED, and therefore the "two workers cannot claim the same
+task" property, is proved in tests/test_claim_task_postgres.py against a real
+ephemeral Postgres. A green run of this fake says the application logic is
+wired correctly, never that the locking works.
 """
 
 from __future__ import annotations
@@ -57,6 +69,7 @@ class _Query:
         self.op: str | None = None
         self.payload: dict | list[dict] | None = None
         self.on_conflict: str | None = None
+        self.ignore_duplicates: bool = False
         # A list, not a single tuple: PostgREST allows chained .order()
         # calls and applies them left to right as successive sort keys.
         self.order_by: list[tuple[str, bool]] = []
@@ -74,6 +87,10 @@ class _Query:
         self.filters.append((col, "in", list(values)))
         return self
 
+    def gte(self, col: str, val: object) -> "_Query":
+        self.filters.append((col, "gte", val))
+        return self
+
     def order(self, col: str, desc: bool = False) -> "_Query":
         self.order_by.append((col, desc))
         return self
@@ -88,10 +105,16 @@ class _Query:
         self.payload = payload
         return self
 
-    def upsert(self, payload, on_conflict: str | None = None) -> "_Query":
+    def upsert(self, payload, on_conflict: str | None = None, ignore_duplicates: bool = False) -> "_Query":
         self.op = "upsert"
         self.payload = payload
         self.on_conflict = on_conflict
+        # postgrest 2.31.0 sends `Prefer: resolution=ignore-duplicates` for
+        # this, which PostgREST turns into ON CONFLICT DO NOTHING — the
+        # existing row is left untouched and is NOT returned. Modelled here
+        # because atlas.planner.run_planner depends on exactly that
+        # distinction to avoid regressing completed tasks.
+        self.ignore_duplicates = ignore_duplicates
         return self
 
     def _rows(self) -> list[dict]:
@@ -103,6 +126,14 @@ class _Query:
                 return False
             if op == "in" and row.get(col) not in val:
                 return False
+            if op == "gte":
+                actual = row.get(col)
+                # Both sides are ISO 8601 timestamps in every current caller
+                # (the month-scoped budget rail). String comparison is only
+                # correct for those if the offsets match, so compare parsed
+                # datetimes instead.
+                if actual is None or _as_utc(actual) < _as_utc(val):
+                    return False
         return True
 
     def _project(self, row: dict) -> dict:
@@ -159,6 +190,10 @@ class _Query:
                 if self.on_conflict:
                     existing = next((r for r in rows if r.get(self.on_conflict) == p.get(self.on_conflict)), None)
                 if existing is not None:
+                    if self.ignore_duplicates:
+                        # DO NOTHING: row untouched, and not part of the
+                        # returned representation.
+                        continue
                     existing.update(p)
                     results.append(existing)
                 else:
@@ -170,6 +205,16 @@ class _Query:
             return _Result([self._project(r) for r in results])
 
         raise NotImplementedError(self.op)
+
+
+def _as_utc(value):
+    """Parse a timestamp the way PostgREST returns one. Mirrors
+    atlas.reconciliation.reconcile._as_utc — kept local so the fake does not
+    depend on the module it is used to test."""
+    if value is None:
+        return None
+    dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -186,10 +231,106 @@ class FakeDB:
     def seed(self, name: str, rows: list[dict]) -> None:
         self.tables.setdefault(name, []).extend(dict(r) for r in rows)
 
+    def rpc(self, fn: str, params: dict) -> "_RpcCall":
+        if fn != "claim_task":
+            raise NotImplementedError(f"FakeDB has no emulation for rpc({fn!r})")
+        return _RpcCall(self, params)
+
+
+class _RpcCall:
+    """Emulates the migration 0009 `claim_task()` function.
+
+    Mirrors that function's predicate clause for clause — the claimable
+    statuses, the retry ceiling, the backoff gate and the expired-lease
+    reclaim — so application logic written against the real RPC is exercised
+    honestly here.
+
+    What it deliberately does NOT emulate is FOR UPDATE SKIP LOCKED, because
+    there is nothing to emulate: this fake is single-threaded and has no
+    transactions. The concurrency guarantee itself is proved against a real
+    ephemeral Postgres in tests/test_claim_task_postgres.py, which is the
+    only place it can be proved. Do not read a passing test here as evidence
+    that two workers cannot double-claim.
+    """
+
+    def __init__(self, db: "FakeDB", params: dict):
+        self.db = db
+        self.params = params
+
+    def execute(self) -> _Result:
+        now = datetime.now(timezone.utc)
+        run_plan_id = self.params["p_run_plan_id"]
+        owner = self.params["p_owner"]
+        lease_seconds = self.params.get("p_lease_seconds", 600)
+
+        def claimable(row: dict) -> bool:
+            if row.get("run_plan_id") != run_plan_id:
+                return False
+            if (row.get("retry_number") or 0) >= (row.get("max_attempts") or 3):
+                return False
+            status = row.get("status")
+            if status in ("planned", "queued"):
+                return True
+            if status == "retryable":
+                nxt = _as_utc(row.get("next_attempt_at"))
+                return nxt is None or nxt <= now
+            if status == "running":
+                expires = _as_utc(row.get("lease_expires_at"))
+                return expires is not None and expires < now
+            return False
+
+        rows = self.db.tables.setdefault("observations", [])
+        candidates = sorted(
+            (r for r in rows if claimable(r)),
+            key=lambda r: r.get("replicate_index") or 0,
+        )
+        if not candidates:
+            return _Result([])
+
+        row = candidates[0]
+        row["status"] = "running"
+        row["lease_owner"] = owner
+        row["lease_acquired_at"] = now.isoformat()
+        row["lease_expires_at"] = (now + timedelta(seconds=lease_seconds)).isoformat()
+        row["retry_number"] = (row.get("retry_number") or 0) + 1
+        return _Result([dict(row)])
+
 
 @pytest.fixture
 def fake_db() -> FakeDB:
     return FakeDB()
+
+
+@pytest.fixture
+def fake_drive(monkeypatch) -> list[dict]:
+    """Stub out the Google Drive leg of the Evidence Vault, nothing else.
+
+    Deliberately patches `vault.upload_to_drive` rather than
+    `vault.store_evidence`. The real `store_evidence` still runs, so the
+    evidence row it writes — and every Operating System §7 provenance column
+    on it — is the genuine article and can be asserted on. Stubbing
+    store_evidence itself would make the Phase A §4 tests assert against a
+    mock of the exact behaviour under test.
+
+    Returns the list of uploads performed, newest last.
+    """
+    uploads: list[dict] = []
+
+    def _upload(local_path, folder_id=None, *, record=None):
+        with open(local_path, encoding="utf-8") as handle:
+            payload = handle.read()
+        uploads.append(
+            {
+                "local_path": local_path,
+                "folder_id": folder_id,
+                "record": record,
+                "payload": payload,
+            }
+        )
+        return f"https://drive.example/file/{record.payload_hash}" if record else "https://drive.example/file/anon"
+
+    monkeypatch.setattr("atlas.evidence.vault.upload_to_drive", _upload)
+    return uploads
 
 
 @pytest.fixture
@@ -237,7 +378,13 @@ def pipeline(fake_db: FakeDB) -> dict:
                 "provider": "openai",
                 "replicate_index": 0,
                 "status": "queued",
+                # As migration 0009 leaves a freshly planned row.
                 "retry_number": 0,
+                "max_attempts": 3,
+                "lease_owner": None,
+                "lease_acquired_at": None,
+                "lease_expires_at": None,
+                "next_attempt_at": None,
             }
         ],
     )

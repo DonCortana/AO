@@ -60,7 +60,8 @@ src/atlas/
     scoring.py         the production AVS entry point — eligibility from the gate (D-044)
 
 migrations/            Supabase SQL migrations, RLS enabled from migration 0001
-                       0005 is written but NOT yet applied — see D-043, D-044
+                       0001-0008 are applied to the live project; 0009 adds
+                       task leases + the claim_task() RPC (D-070, D-079)
 .github/workflows/     scheduled + manual-dispatch recovery workflows
 ```
 
@@ -79,6 +80,38 @@ the GitHub `production` environment, restricted to the `main` branch. Gemini
 authenticates via Vertex AI service-account credentials, not an API key
 (D-029) — see `docs/decision-register.md`. Local `.env` is for dev only and
 is gitignored.
+
+## Tests and CI
+
+```bash
+pip install --require-hashes -r requirements-dev.txt   # pinned, see D-078
+pip install -e . --no-deps
+ruff check src tests scripts
+pytest
+```
+
+`pytest` alone leaves the `claim_task` acceptance tests skipped — they need a
+real Postgres, because `FOR UPDATE SKIP LOCKED` is the property under test and
+no in-memory double can exhibit it. To run them, point
+`ATLAS_TEST_DATABASE_URL` at a throwaway server:
+
+```bash
+ATLAS_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/atlas_test pytest
+```
+
+That fixture rebuilds the schema by applying `migrations/0001` through HEAD
+onto an empty database, so a migration that does not apply cleanly from
+scratch fails there too. `ci.yml` sets the variable against a service
+container and additionally asserts those tests did not skip — a skipped
+concurrency test and a passing one look identical in a summary line.
+
+`python scripts/smoke_test.py --offline` runs plan → claim → finalize →
+evidence → freeze gate with an in-memory double and a stubbed adapter: no
+provider keys, no Drive, no live project.
+
+**`ci.yml` must be set as a required status check on `main` in branch
+protection.** Nothing in the repository can enforce that, and CI that can be
+merged past is advisory.
 
 ## Week 1 acceptance criterion
 

@@ -1,0 +1,105 @@
+# Pull-request CI. Action Plan v2.0 Phase A: "PR CI: pytest, ruff, migration
+# validation, smoke test — required to merge."
+#
+# Everything here executes for real. There are no placeholder steps in this
+# file, and none may be added: the other workflows in this directory fail
+# closed precisely so that a green check cannot mean "nothing ran".
+#
+# Mark `ci` a required status check on `main` in branch protection — this file
+# alone does not enforce that, and CI that can be merged past is advisory.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      # Migration validation and the claim_task acceptance tests need a real
+      # server: FOR UPDATE SKIP LOCKED is the property under test and no fake
+      # can exhibit it. Version tracks Supabase's Postgres major.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: atlas_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      ATLAS_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/atlas_ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pinned dependencies
+        # --require-hashes: the lock is hash-pinned, so a tampered or
+        # substituted artifact fails the install rather than being executed.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements-dev.txt
+          pip install -e . --no-deps
+
+      - name: Lint
+        run: ruff check src tests scripts
+
+      - name: Validate migrations apply cleanly from scratch
+        # 0001 -> HEAD against an empty database. Catches a migration that
+        # only works against the one live project's current state — which is
+        # exactly the drift that left the README claiming 0005 was unapplied.
+        run: |
+          psql "$ATLAS_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -c "drop schema if exists public cascade; create schema public;"
+          for f in migrations/0*.sql; do
+            echo "--- applying $f"
+            psql "$ATLAS_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      - name: Check migrations are numbered contiguously
+        # A duplicate or skipped number means two branches picked the same
+        # slot, and whichever merges second silently never applies.
+        run: python scripts/check_migration_sequence.py
+
+      - name: Tests
+        # The claim_task acceptance tests deselect themselves when
+        # ATLAS_TEST_DATABASE_URL is unset. It is set above, so they must run
+        # here — the next step proves they were not silently skipped.
+        run: pytest -q
+
+      - name: Assert the real-Postgres acceptance tests actually ran
+        run: |
+          collected=$(pytest tests/test_claim_task_postgres.py --collect-only -q | tail -1)
+          echo "collected: $collected"
+          pytest tests/test_claim_task_postgres.py -q --no-header \
+            | tee /tmp/pg-tests.log
+          if grep -qiE "[0-9]+ skipped" /tmp/pg-tests.log; then
+            echo "::error::claim_task acceptance tests were SKIPPED in CI."
+            echo "::error::ATLAS_TEST_DATABASE_URL is not reaching them, so the"
+            echo "::error::concurrency guarantees are unverified. Failing closed."
+            exit 1
+          fi
+
+      - name: Smoke test (offline)
+        # Exercises plan -> claim -> finalize -> evidence freeze gate against
+        # the ephemeral Postgres with stubbed adapters. No provider keys, no
+        # Drive, no live Supabase project.
+        run: python scripts/smoke_test.py --offline

@@ -244,7 +244,7 @@ def spearman_rho(xs: Sequence[float], ys: Sequence[float]) -> float | None:
     dx = [v - mx for v in rx]
     dy = [v - my for v in ry]
 
-    numerator = sum(a * b for a, b in zip(dx, dy))
+    numerator = sum(a * b for a, b in zip(dx, dy, strict=True))
     denominator = (sum(a * a for a in dx) * sum(b * b for b in dy)) ** 0.5
     if denominator == 0.0:
         return None
