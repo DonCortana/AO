@@ -327,11 +327,24 @@ on the agreement frame, which is the intended behaviour, not a gap.
    argument.
 2. ~~`model` literal for consumer surfaces.~~ **Registered as D-060.**
 3. ~~§6.1's run window does not bind Layer B.~~ **Registered as D-061.**
-4. **`task_id` synthesis and upsert idempotency** for human-originated
-   observations.
-5. **Automation posture (from tonight's sidenote).** Manual capture retained;
+4. ~~`task_id` synthesis and upsert idempotency for human-originated
+   observations.~~ Same thread as **D-062** (`run_plans.window_start`/
+   `window_end` for Layer B), not a separate concern: both are instances of
+   retrospective-vs-forward-planned state — a value that cannot be known
+   correctly until after capture completes, written by a post-capture update
+   step that a missed run leaves silently stale rather than loudly wrong.
+   `task_id` idempotency guards against a duplicate write; D-062 guards
+   against a placeholder window read as real. **Registered as D-065** —
+   `task_id_for()`'s plain string interpolation, `_write_observation`'s
+   upsert-on-`task_id` with a hard fail on an empty result, and
+   `_store_capture_evidence`'s always-real `observation_id` were read from
+   source and traced end to end; no gap found, no code changed.
+   **This was a verification, not a fix** — no lines in
+   `consumer_ingest.py` were touched to reach this conclusion.
+5. ~~Automation posture (from tonight's sidenote).~~ Manual capture retained;
    assisted-capture tooling permitted; the automation clause is load-bearing
    for D-042 and any change is a §10 change-control matter.
+   **Registered as D-064.**
 6. ~~Promote a `sha256_file` helper into `atlas/evidence/vault.py`.~~
    **Done.** `vault.sha256_file` is public beside `hash_payload`; the
    private copy in `scripts/store_84_evidence.py` was removed. Standing
