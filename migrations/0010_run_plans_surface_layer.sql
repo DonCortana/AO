@@ -1,23 +1,34 @@
 -- 0010: run_plans.surface_layer — Layer A/Layer B separation at the PLAN
 -- level, mirroring what 0005 (D-043) established at the observation level.
 --
--- GOVERNANCE NOTE — READ BEFORE APPLYING. The change this file implements is
--- attributed in the working branch to D-081 (with D-080 and D-082 as
--- neighbours). As of this file's authoring, docs/decision-register.md ends at
--- D-079 and none of D-080/D-081/D-082 exist in the register or in
--- docs/draft-decisions-pending.md. Methodology §10 requires a decision be
--- documented BEFORE implementation. This migration is therefore staged and
--- unapplied pending registration of the governing decision; the references
--- below are forward references, not citations of accepted entries.
+-- Governed by D-081 (this column, its vocabulary, and the backfill below),
+-- alongside D-080 (the Layer B run_plans creation path this column exists to
+-- make sound) and D-082 (the reuse filters on both layers that read it). All
+-- three accepted 2026-09-01 and registered in docs/decision-register.md.
 --
--- The gap being closed, stated independently of the decision numbering:
--- `atlas.calibration.consumer_run_plan` is insert-only and plans no
--- observations, so its reuse check — which matches a run plan by the set of
--- prompt_version_ids on that plan's observations — cannot distinguish "no
--- Layer B plan exists" from "a Layer B plan exists but nothing has been
--- ingested against it yet". run_plans carries no record of which layer a plan
--- was created for, so the row's own answer cannot be consulted. This column
--- supplies that answer.
+-- APPLY WITH `psql --single-transaction`. Required by D-081, not optional
+-- here — see the note above the DO block for what depends on it.
+--
+-- The gap being closed, as D-081 states it. Both layers decide plan reuse by
+-- inference — matching a run plan on the set of prompt_version_ids its child
+-- observations carry — and run_plans records no layer of its own, so the
+-- row's own answer cannot be consulted. D-081 names three distinct ways that
+-- inference is unsound:
+--
+--   1. An uncaptured plan is indistinguishable from an absent one.
+--      `consumer_run_plan` is insert-only and plans no observations, so a
+--      freshly created Layer B plan has none until a human capture is
+--      ingested. Two back-to-back --commit invocations both read "no match"
+--      and insert two rows.
+--   2. The match is set equality against the full prompt set, so a partially
+--      ingested plan also reads as absent — the same double-insert, no
+--      longer confined to the zero-ingest window.
+--   3. It cannot guard the Layer A direction at all.
+--      `driver._find_reusable_run_plan` carries no layer filter, so once
+--      Layer B captures are ingested a Layer A re-plan can match the Layer B
+--      plan (D-082, which adds the filters on both sides).
+--
+-- This column supplies the answer all three lack.
 --
 -- Column definition and CHECK vocabulary are copied from 0005's
 -- observations.surface_layer, deliberately, so the two tables cannot drift
@@ -72,9 +83,19 @@ comment on column run_plans.surface_layer is
 --
 -- Wrapped in a row-count assertion because a bare UPDATE whose WHERE matches
 -- nothing succeeds silently and would leave the plan misclassified as 'api',
--- which is the exact failure this migration was written to prevent. Raising
--- here aborts the enclosing transaction, taking the ADD COLUMN with it, so a
--- surprise leaves the schema untouched rather than half-migrated.
+-- which is the exact failure this migration was written to prevent.
+--
+-- WHAT THE ASSERTION DOES AND DOES NOT GUARANTEE. It always aborts the
+-- statement and reports a non-zero exit; it does NOT, by itself, undo the
+-- ALTER TABLE above. No migration in this repository opens a transaction of
+-- its own, so under psql's default autocommit each statement commits as it
+-- completes and the ADD COLUMN would already be durable by the time this
+-- block raises — leaving the schema migrated and the backfill not done, the
+-- half-applied state the assertion is meant to rule out. Atomicity therefore
+-- comes from the invocation, not from this file: applied with
+-- `psql --single-transaction` (required by D-081) the raise rolls the ADD
+-- COLUMN back with it and the migration is all-or-nothing. Applied without
+-- that flag, a failure here needs manual cleanup.
 
 do $$
 declare
