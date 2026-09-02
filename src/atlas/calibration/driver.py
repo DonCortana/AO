@@ -54,6 +54,11 @@ MIN_WINDOW_HOURS = 6
 RUN_TYPE = "frozen_core"
 LAYER_API = "api"
 
+# prompt_versions.set_type, not run_plans.run_type — the same string naming two
+# different vocabularies. Named separately so the D-083 prompt-set key reads as
+# what it is and cannot drift into the run-type constant.
+PROMPT_SET_TYPE = "frozen_core"
+
 
 class PreflightError(Exception):
     """Preflight refused the run. Carries every failure, not just the first.
@@ -237,13 +242,40 @@ def _load_prompts(db, prompt_version_ids: tuple[str, ...]) -> list[dict]:
     )
 
 
+def _load_prompt_set(db, version: str, market_id: str) -> list[dict]:
+    """Every prompt row at one prompt-set key.
+
+    D-083 fixes the key as (version, set_type, market_id): the prompt set at a
+    version IS these rows, so this is what the supplied ids are checked to be
+    all of. `consumer_ingest.frozen_core_prompts` reads the same key, which is
+    what makes planning and ingest agree on set membership.
+    """
+    return (
+        db.table("prompt_versions")
+        .select("id")
+        .eq("version", version)
+        .eq("set_type", PROMPT_SET_TYPE)
+        .eq("market_id", market_id)
+        .execute()
+        .data
+    )
+
+
 def _check_prompts(
+    db,
     prompts: list[dict],
     prompt_version_ids: tuple[str, ...],
     market_id: str,
     failures: list[str],
 ) -> str | None:
-    """§2 checks 1-3. Returns the single prompt-set version if there is one."""
+    """§2 checks 1-3, plus D-083 completeness. Returns the single prompt-set
+    version if there is one.
+
+    Takes `db` for the completeness check only — every other check reads the
+    already-loaded rows. The extra query is the cost D-083 records: being a
+    subset is invisible from inside the subset, so the question cannot be
+    answered from the supplied ids alone.
+    """
     found = {r["id"] for r in prompts}
     missing = [pid for pid in prompt_version_ids if pid not in found]
     if missing:
@@ -261,13 +293,13 @@ def _check_prompts(
         )
 
     wrong_type = sorted(
-        r["id"] for r in prompts if r.get("set_type") != "frozen_core"
+        r["id"] for r in prompts if r.get("set_type") != PROMPT_SET_TYPE
     )
     if wrong_type:
         detail = ", ".join(
             f"{r['id']} ({r.get('set_type')!r})"
             for r in sorted(prompts, key=lambda r: r["id"])
-            if r.get("set_type") != "frozen_core"
+            if r.get("set_type") != PROMPT_SET_TYPE
         )
         failures.append(f"prompt rows are not set_type='frozen_core': {detail}")
 
@@ -304,7 +336,29 @@ def _check_prompts(
             "the market the prompts were written for."
         )
 
-    return next(iter(versions)) if len(versions) == 1 else None
+    version = next(iter(versions)) if len(versions) == 1 else None
+
+    # D-083 — the supplied ids are ALL the rows at this prompt-set key, not
+    # merely a self-consistent subset of them. Skipped when the version is
+    # ambiguous or the market disagrees, both already reported above: the key
+    # itself would be wrong, and a second failure derived from a wrong key is
+    # noise on top of the real one.
+    if version is not None and not markets - {market_id}:
+        siblings = {r["id"] for r in _load_prompt_set(db, version, market_id)}
+        omitted = sorted(siblings - set(prompt_version_ids))
+        if omitted:
+            failures.append(
+                f"prompt set {version!r} is incomplete: {len(omitted)} of "
+                f"{len(siblings)} rows at (version={version!r}, "
+                f"set_type={PROMPT_SET_TYPE!r}, market_id={market_id}) were "
+                "not supplied: "
+                + ", ".join(omitted)
+                + ". D-083: a prompt set is exactly the rows at its key, so "
+                "planning a subset measures a different instrument while "
+                "stamping it with the same prompt_set_version."
+            )
+
+    return version
 
 
 # ---------------------------------------------------------------------------
@@ -312,8 +366,89 @@ def _check_prompts(
 # ---------------------------------------------------------------------------
 
 
+def _ambiguous_key_failure(plans: list[dict], prompt_set_version: str) -> str:
+    """The message for an ambiguous reuse key, shared by both layers.
+
+    D-084 keys reuse on (property_id, run_type, surface_layer,
+    prompt_set_version), which `new_plan=True` can legitimately satisfy more
+    than once — a deliberate second baseline is the same key by design. The
+    register does not say which to reuse, and there is no answer that is right
+    by default: silently taking one (the earliest, say) means the other can
+    never be reused again, only recreated, which quietly undoes the deliberate
+    act that created it. So this refuses and names both, the same posture as
+    the replicate_count mismatch guard — the operator says which plan they
+    mean by passing `run_plan_id`.
+    """
+    ids = ", ".join(sorted(p["id"] for p in plans))
+    return (
+        f"{len(plans)} run plans match this property, run type, layer and "
+        f"prompt set {prompt_set_version!r}: {ids}. A second plan at the same "
+        "key is what new_plan=True creates, so this is not necessarily an "
+        "error — but which one to reuse is not something this driver can "
+        "decide. Pass run_plan_id to name the plan you mean, or new_plan=True "
+        "to add another."
+    )
+
+
+def _load_named_run_plan(
+    db,
+    run_plan_id: str,
+    *,
+    property_id: str,
+    surface_layer: str,
+    prompt_set_version: str,
+    failures: list[str],
+) -> dict | None:
+    """Resolve an explicitly named run plan, and check it is one this
+    invocation could legitimately have reused.
+
+    The checks are what stop `run_plan_id` becoming a way around preflight:
+    naming a plan selects among the candidates, it does not create a new way to
+    write observations into an unrelated plan.
+    """
+    rows = (
+        db.table("run_plans")
+        .select(
+            "id, property_id, run_type, replicate_count, status, "
+            "surface_layer, prompt_set_version, planned_at"
+        )
+        .eq("id", run_plan_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        failures.append(f"run_plan_id {run_plan_id} does not exist.")
+        return None
+
+    plan = rows[0]
+    mismatches = []
+    if plan.get("property_id") != property_id:
+        mismatches.append(f"property_id={plan.get('property_id')}")
+    if plan.get("run_type") != RUN_TYPE:
+        mismatches.append(f"run_type={plan.get('run_type')!r}")
+    if plan.get("surface_layer") != surface_layer:
+        mismatches.append(f"surface_layer={plan.get('surface_layer')!r}")
+    if plan.get("prompt_set_version") != prompt_set_version:
+        mismatches.append(
+            f"prompt_set_version={plan.get('prompt_set_version')!r}"
+        )
+    if mismatches:
+        failures.append(
+            f"run_plan_id {run_plan_id} does not match this invocation: "
+            + ", ".join(mismatches)
+            + f". Expected property_id={property_id}, run_type={RUN_TYPE!r}, "
+            f"surface_layer={surface_layer!r}, "
+            f"prompt_set_version={prompt_set_version!r}."
+        )
+        return None
+    return plan
+
+
 def _find_reusable_run_plan(
-    db, property_id: str, prompt_version_ids: tuple[str, ...]
+    db,
+    property_id: str,
+    prompt_version_ids: tuple[str, ...],
+    prompt_set_version: str,
 ) -> dict | None:
     """Find an existing frozen_core run plan for this property + prompt set.
 
@@ -327,33 +462,76 @@ def _find_reusable_run_plan(
     prompt-set-version column: the identity of a plan's prompt set exists only
     as the distinct prompt_version_ids of the rows planned against it. Flagged
     in the summary as a schema gap worth closing.
+
+    Both queries filter `surface_layer='api'` (D-082). Without them this
+    function matches on prompt set alone, so once Samujana's Layer B captures
+    are ingested — they carry the identical `frozen-core-samujana-v1` ten-prompt
+    set — a Layer A re-plan can match the *consumer* plan and hand `plan_run`
+    a Layer B `run_plan_id`, writing API observations under it. That is the
+    same cross-layer merge D-043 prevents at the `observations` level, in the
+    direction `consumer_run_plan` alone could not guard.
+
+    The `run_plans` filter is not redundant with the `observations` one: it is
+    what makes a plan with no observations yet resolvable at all, and it reads
+    the plan's own recorded layer instead of inferring one from its children.
+
+    Raises `PreflightError` when more than one plan matches the key — see
+    `_ambiguous_key_failure`. The caller names the plan it means with
+    `run_plan_id` rather than having one chosen for it.
+
+    **D-084: keyed on the record, with the observations match kept only as a
+    fallback for null rows.** The primary path is
+    (property_id, run_type, surface_layer, prompt_set_version) with no
+    observations join at all. `run_plans.prompt_set_version` is nullable —
+    migration 0011 backfilled the two frozen_core rows but left the 26
+    system_zero rows null, and nothing stops a future writer inserting without
+    it — so a plan with no recorded version still resolves the old way rather
+    than being silently unmatched. The two paths never mix: a null row cannot
+    satisfy the key, and a keyed row is never re-tested against its children.
     """
     plans = (
         db.table("run_plans")
-        .select("id, property_id, run_type, replicate_count, status")
+        .select(
+            "id, property_id, run_type, replicate_count, status, "
+            "surface_layer, prompt_set_version, planned_at"
+        )
         .eq("property_id", property_id)
         .eq("run_type", RUN_TYPE)
+        .eq("surface_layer", LAYER_API)
         .execute()
         .data
     )
     if not plans:
         return None
 
-    plan_ids = [p["id"] for p in plans]
+    keyed = [p for p in plans if p.get("prompt_set_version") == prompt_set_version]
+    if len(keyed) > 1:
+        raise PreflightError([_ambiguous_key_failure(keyed, prompt_set_version)])
+    if keyed:
+        return keyed[0]
+
+    # Fallback (D-084): only rows that recorded no version. A row that recorded
+    # a *different* version has answered the question and is not a candidate.
+    legacy = [p for p in plans if p.get("prompt_set_version") is None]
+    if not legacy:
+        return None
+
+    legacy_ids = [p["id"] for p in legacy]
     observations = (
         db.table("observations")
         .select("run_plan_id, prompt_version_id")
-        .in_("run_plan_id", plan_ids)
+        .in_("run_plan_id", legacy_ids)
+        .eq("surface_layer", LAYER_API)
         .execute()
         .data
     )
 
-    by_plan: dict[str, set[str]] = {pid: set() for pid in plan_ids}
+    by_plan: dict[str, set[str]] = {pid: set() for pid in legacy_ids}
     for obs in observations:
         by_plan.setdefault(obs["run_plan_id"], set()).add(obs["prompt_version_id"])
 
     wanted = set(prompt_version_ids)
-    for plan in plans:
+    for plan in legacy:
         if by_plan.get(plan["id"]) == wanted:
             return plan
     return None
@@ -376,6 +554,7 @@ def plan_calibration_run(
     window_hours: int = MIN_WINDOW_HOURS,
     commit: bool = False,
     new_plan: bool = False,
+    run_plan_id: str | None = None,
     planner=plan_run,
     now: datetime | None = None,
 ) -> CalibrationPlan:
@@ -390,6 +569,12 @@ def plan_calibration_run(
     baseline is a deliberate act, not the accidental result of running a
     command twice."
 
+    `run_plan_id` names the plan to reuse, and is how an ambiguous key is
+    resolved: once `new_plan=True` has created a second baseline, both match
+    the D-084 key and the driver refuses to guess (D-084 records the key, not a
+    tie-break). Mutually exclusive with `new_plan` — one says reuse this, the
+    other says create another.
+
     `planner` is injectable purely for testing, so these tests can assert on
     what the driver asks the planner for without writing observations. (Phase
     A later added an optional keyword-only `db` to `plan_run` as well, so its
@@ -403,6 +588,12 @@ def plan_calibration_run(
     failures: list[str] = []
     _check_layer(layer, failures)
     _check_providers(providers_t, failures)
+
+    if run_plan_id is not None and new_plan:
+        failures.append(
+            "run_plan_id and new_plan=True are mutually exclusive: one names an "
+            "existing plan to reuse, the other asks for a new one."
+        )
 
     if replicate_count < 1:
         failures.append(f"replicate_count must be >= 1, got {replicate_count}.")
@@ -423,15 +614,41 @@ def plan_calibration_run(
     _check_selection_criteria(prop, failures)
 
     prompts = _load_prompts(db, prompt_ids_t)
-    version = _check_prompts(prompts, prompt_ids_t, market_id, failures)
+    version = _check_prompts(db, prompts, prompt_ids_t, market_id, failures)
 
     if failures:
         raise PreflightError(failures)
 
-    assert version is not None  # guaranteed: _check_prompts failed otherwise
+    if version is None:
+        # Unreachable: _check_prompts returns None only when the prompt rows
+        # span more than one version, which it also records as a failure, and
+        # `failures` was just raised on. Kept as a raise rather than an assert
+        # because `python -O` strips asserts, and a silent None here is now
+        # load-bearing: D-084 writes this value into run_plans.prompt_set_version,
+        # which is nullable, so the plan would be created with no recorded
+        # prompt set and run_gate would later refuse to gate it (D-085).
+        raise RuntimeError(
+            "internal invariant violated: prompt-set version is None after "
+            "preflight reported no failures."
+        )
 
     notes: list[str] = []
-    existing = None if new_plan else _find_reusable_run_plan(db, property_id, prompt_ids_t)
+    if new_plan:
+        existing = None
+    elif run_plan_id is not None:
+        named_failures: list[str] = []
+        existing = _load_named_run_plan(
+            db,
+            run_plan_id,
+            property_id=property_id,
+            surface_layer=LAYER_API,
+            prompt_set_version=version,
+            failures=named_failures,
+        )
+        if named_failures:
+            raise PreflightError(named_failures)
+    else:
+        existing = _find_reusable_run_plan(db, property_id, prompt_ids_t, version)
 
     if existing is not None and existing.get("replicate_count") != replicate_count:
         # Reusing the plan would leave run_plans.replicate_count disagreeing
@@ -499,6 +716,12 @@ def plan_calibration_run(
                     "run_type": RUN_TYPE,
                     "replicate_count": replicate_count,
                     "status": "planned",
+                    # D-084: the prompt set this plan measures, recorded
+                    # rather than left to be inferred from the observations
+                    # plan_run is about to write. surface_layer is not written
+                    # here — Layer A is migration 0010's 'api' default, and
+                    # this driver is Layer A by construction (_check_layer).
+                    "prompt_set_version": version,
                     # §6.1 minimum six-hour window. Written at plan time
                     # because it is unrecoverable afterwards.
                     "window_start": window_start,

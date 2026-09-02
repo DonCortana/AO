@@ -550,3 +550,328 @@ def test_longer_window_is_honoured(calibration):
     start = datetime.fromisoformat(row["window_start"])
     end = datetime.fromisoformat(row["window_end"])
     assert (end - start).total_seconds() == 12 * 3600
+
+
+# ---------------------------------------------------------------------------
+# Layer separation — D-082, the Layer A direction. The Layer B direction is
+# asserted in tests/test_consumer_run_plan.py.
+# ---------------------------------------------------------------------------
+
+
+def _seed_layer_b_plan(calibration, *, replicate_count, ingest_prompts=True):
+    """A Layer B consumer plan for this property. When its captures have been
+    ingested they carry the identical frozen_core prompt set Layer A plans —
+    the real Samujana shape, where both layers run `frozen-core-samujana-v1`."""
+    db = calibration["db"]
+    run_plan_id = str(uuid.uuid4())
+    db.seed(
+        "run_plans",
+        [
+            {
+                "id": run_plan_id,
+                "property_id": calibration["property_id"],
+                "run_type": "frozen_core",
+                "replicate_count": replicate_count,
+                "status": "planned",
+                "surface_layer": "consumer",
+            }
+        ],
+    )
+    if ingest_prompts:
+        db.seed(
+            "observations",
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "task_id": f"task-consumer-{n}",
+                    "run_plan_id": run_plan_id,
+                    "prompt_version_id": pid,
+                    "provider": "google_ai",
+                    "replicate_index": 0,
+                    "status": "complete",
+                    "surface_layer": "consumer",
+                }
+                for n, pid in enumerate(calibration["prompt_ids"])
+            ],
+        )
+    return run_plan_id
+
+
+def test_layer_b_plan_is_not_reusable_for_a_layer_a_replan(calibration):
+    """D-082's Layer A direction. Once consumer captures are ingested, the
+    Layer B plan's observations carry exactly the prompt set a Layer A re-plan
+    asks for. Without the surface_layer filters the driver matches it and
+    hands plan_run a consumer run_plan_id, writing API observations under the
+    Layer B plan — the cross-layer merge D-043 prevents one level down.
+
+    replicate_count is 5 here, agreeing with Layer A's default, precisely so
+    the mismatch guard cannot fire: the layer filter has to be what refuses
+    this, not an incidental disagreement about n.
+    """
+    db = calibration["db"]
+    planner = FakePlanner(db)
+    layer_b_id = _seed_layer_b_plan(calibration, replicate_count=5)
+
+    plan = _run(calibration, planner=planner, commit=True)
+
+    assert plan.reused is False
+    assert plan.run_plan_id != layer_b_id
+
+    rows = {r["id"]: r for r in db.tables["run_plans"]}
+    assert len(rows) == 2
+    assert rows[layer_b_id]["surface_layer"] == "consumer"
+    assert rows[plan.run_plan_id]["surface_layer"] == "api"
+
+    # The planner was pointed at the new Layer A plan, never the consumer one.
+    assert planner.calls[0][0] == plan.run_plan_id
+
+
+def test_layer_a_replan_ignores_consumer_observations_on_its_own_property(calibration):
+    """The observations filter specifically: a Layer A plan that is genuinely
+    reusable stays reusable even when consumer rows for the same prompt set
+    exist alongside it."""
+    db = calibration["db"]
+    planner = FakePlanner(db)
+    first = _run(calibration, planner=planner, commit=True)
+    _seed_layer_b_plan(calibration, replicate_count=5)
+
+    second = _run(calibration, planner=FakePlanner(db), commit=True)
+
+    assert second.reused is True
+    assert second.run_plan_id == first.run_plan_id
+
+
+# ---------------------------------------------------------------------------
+# D-083 — prompt-set completeness, and D-084 — keyed reuse with the null
+# fallback. The Layer B side of both is in tests/test_consumer_run_plan.py.
+# ---------------------------------------------------------------------------
+
+
+def test_a_subset_of_the_prompt_set_is_rejected(calibration):
+    """D-083: nine of the ten rows at (version, set_type, market_id) is a
+    different instrument, and passed every pre-D-083 check while returning the
+    same prompt_set_version."""
+    ids = calibration["prompt_ids"][:9]
+    omitted = calibration["prompt_ids"][9]
+
+    with pytest.raises(PreflightError) as exc:
+        _run(calibration, prompt_version_ids=ids)
+
+    failures = _failures(exc)
+    assert "is incomplete" in failures
+    assert omitted in failures
+    assert "D-083" in failures
+
+
+def test_completeness_is_scoped_to_set_type_and_market(calibration):
+    """The key is (version, set_type, market_id), not version alone: a row
+    sharing the version but not the set_type or the market is not part of this
+    set and its absence is not incompleteness."""
+    db = calibration["db"]
+    db.seed(
+        "prompt_versions",
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "set_type": "benchmark",
+                "version": "fc-v1.0",
+                "prompt_text": "same version, other set type",
+                "intent_tier": "A",
+                "market_id": calibration["market_id"],
+                "is_holdout": False,
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "set_type": "frozen_core",
+                "version": "fc-v1.0",
+                "prompt_text": "same version, other market",
+                "intent_tier": "A",
+                "market_id": str(uuid.uuid4()),
+                "is_holdout": False,
+            },
+        ],
+    )
+
+    plan = _run(calibration)
+
+    assert plan.prompt_set_version == "fc-v1.0"
+
+
+def test_insert_records_the_prompt_set_version(calibration):
+    db = calibration["db"]
+
+    plan = _run(calibration, planner=FakePlanner(db), commit=True)
+
+    row = db.tables["run_plans"][0]
+    assert row["prompt_set_version"] == "fc-v1.0" == plan.prompt_set_version
+
+
+def test_reuse_is_keyed_on_the_recorded_version_not_the_observations(calibration):
+    """D-084: the driver's own plan is found by key. The observations are
+    still written by plan_run, so this passes either way — what it pins is
+    that a plan whose children were never written is still matched, which the
+    old set-equality path could not do."""
+    db = calibration["db"]
+    first = _run(calibration, planner=FakePlanner(db), commit=True)
+    db.tables["observations"].clear()
+
+    second = _run(calibration, planner=FakePlanner(db), commit=True)
+
+    assert second.reused is True
+    assert second.run_plan_id == first.run_plan_id
+    assert len(db.tables["run_plans"]) == 1
+
+
+def _seed_api_plan(calibration, *, prompt_set_version, prompt_ids, planned_at=None):
+    db = calibration["db"]
+    run_plan_id = str(uuid.uuid4())
+    row = {
+        "id": run_plan_id,
+        "property_id": calibration["property_id"],
+        "run_type": "frozen_core",
+        "replicate_count": 5,
+        "status": "planned",
+        "surface_layer": "api",
+        "prompt_set_version": prompt_set_version,
+    }
+    if planned_at is not None:
+        row["planned_at"] = planned_at
+    db.seed("run_plans", [row])
+    if prompt_ids:
+        db.seed(
+            "observations",
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "task_id": f"task-{run_plan_id}-{n}",
+                    "run_plan_id": run_plan_id,
+                    "prompt_version_id": pid,
+                    "provider": "openai",
+                    "replicate_index": 0,
+                    "status": "complete",
+                    "surface_layer": "api",
+                }
+                for n, pid in enumerate(prompt_ids)
+            ],
+        )
+    return run_plan_id
+
+
+def test_null_version_plan_is_reused_via_the_observations_fallback(calibration):
+    """The nullable column's fallback branch. Both live frozen_core rows were
+    backfilled by migration 0011, so this path has no production coverage —
+    this test is the only thing exercising it on the Layer A side."""
+    db = calibration["db"]
+    legacy_id = _seed_api_plan(
+        calibration, prompt_set_version=None, prompt_ids=calibration["prompt_ids"]
+    )
+
+    plan = _run(calibration, planner=FakePlanner(db), commit=True)
+
+    assert plan.reused is True
+    assert plan.run_plan_id == legacy_id
+    assert len(db.tables["run_plans"]) == 1
+
+
+def test_null_version_plan_with_a_different_set_is_not_reused(calibration):
+    db = calibration["db"]
+    legacy_id = _seed_api_plan(
+        calibration,
+        prompt_set_version=None,
+        prompt_ids=[str(uuid.uuid4()) for _ in range(10)],
+    )
+
+    plan = _run(calibration, planner=FakePlanner(db), commit=True)
+
+    assert plan.reused is False
+    assert plan.run_plan_id != legacy_id
+    assert len(db.tables["run_plans"]) == 2
+
+
+def test_a_plan_recording_a_different_version_is_not_a_fallback_candidate(calibration):
+    """A row that recorded a different version has answered the question. It
+    must not be rescued by the observations fallback, which would let a
+    fc-v2.0 plan absorb a fc-v1.0 re-plan."""
+    db = calibration["db"]
+    other_id = _seed_api_plan(
+        calibration,
+        prompt_set_version="fc-v2.0",
+        prompt_ids=calibration["prompt_ids"],
+    )
+
+    plan = _run(calibration, planner=FakePlanner(db), commit=True)
+
+    assert plan.reused is False
+    assert plan.run_plan_id != other_id
+
+
+def test_an_ambiguous_key_is_refused_not_resolved(calibration):
+    """new_plan=True legitimately creates a second row at the same key, so the
+    match can be ambiguous. Picking one silently — the earliest, say — would
+    mean the second could never be reused again, only recreated, quietly
+    undoing the deliberate act that created it. Refuse and name both."""
+    db = calibration["db"]
+    first = _seed_api_plan(
+        calibration, prompt_set_version="fc-v1.0", prompt_ids=calibration["prompt_ids"]
+    )
+    second = _seed_api_plan(
+        calibration, prompt_set_version="fc-v1.0", prompt_ids=calibration["prompt_ids"]
+    )
+
+    planner = FakePlanner(db)
+    seeded_observations = len(db.tables["observations"])
+
+    with pytest.raises(PreflightError) as exc:
+        _run(calibration, planner=planner, commit=True)
+
+    failures = _failures(exc)
+    assert first in failures
+    assert second in failures
+    assert "run_plan_id" in failures
+    # Fail-closed: refused before a third plan or any new observation.
+    assert len(db.tables["run_plans"]) == 2
+    assert len(db.tables["observations"]) == seeded_observations
+    assert planner.calls == []
+
+
+def test_run_plan_id_resolves_an_ambiguous_key(calibration):
+    """The remedy the refusal names has to actually work."""
+    db = calibration["db"]
+    _seed_api_plan(
+        calibration, prompt_set_version="fc-v1.0", prompt_ids=calibration["prompt_ids"]
+    )
+    wanted = _seed_api_plan(
+        calibration, prompt_set_version="fc-v1.0", prompt_ids=calibration["prompt_ids"]
+    )
+
+    plan = _run(calibration, planner=FakePlanner(db), commit=True, run_plan_id=wanted)
+
+    assert plan.reused is True
+    assert plan.run_plan_id == wanted
+    assert len(db.tables["run_plans"]) == 2
+
+
+def test_run_plan_id_naming_a_plan_from_another_layer_is_refused(calibration):
+    """Naming a plan selects among candidates; it is not a way around the
+    D-082 layer filter or any other preflight check."""
+    db = calibration["db"]
+    layer_b = _seed_layer_b_plan(calibration, replicate_count=5)
+    db.tables["run_plans"][0]["prompt_set_version"] = "fc-v1.0"
+
+    with pytest.raises(PreflightError) as exc:
+        _run(calibration, planner=FakePlanner(db), commit=True, run_plan_id=layer_b)
+
+    assert "surface_layer='consumer'" in _failures(exc)
+
+
+def test_run_plan_id_that_does_not_exist_is_refused(calibration):
+    ghost = str(uuid.uuid4())
+    with pytest.raises(PreflightError) as exc:
+        _run(calibration, run_plan_id=ghost)
+    assert f"run_plan_id {ghost} does not exist" in _failures(exc)
+
+
+def test_run_plan_id_and_new_plan_together_are_refused(calibration):
+    with pytest.raises(PreflightError) as exc:
+        _run(calibration, run_plan_id=str(uuid.uuid4()), new_plan=True)
+    assert "mutually exclusive" in _failures(exc)

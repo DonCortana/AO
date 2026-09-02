@@ -301,6 +301,26 @@ def test_google_ai_is_recorded_as_structurally_undefined(fake_db):
         "recommendations",
         [recommendation(r["id"], 1.00, "ranked", rank=1) for r in api_rows + consumer_rows],
     )
+    # D-085: run_gate reads the plans to derive prompt_set_version, so the rows
+    # the observations point at have to exist here as they do behind the real
+    # foreign key. Both record the version the gate is being told to stamp.
+    fake_db.seed(
+        "run_plans",
+        [
+            {
+                "id": api_plan,
+                "run_type": "frozen_core",
+                "surface_layer": LAYER_API,
+                "prompt_set_version": "accommodation-th-en-v1.0",
+            },
+            {
+                "id": consumer_plan,
+                "run_type": "frozen_core",
+                "surface_layer": LAYER_CONSUMER,
+                "prompt_set_version": "accommodation-th-en-v1.0",
+            },
+        ],
+    )
 
     run = run_gate(
         fake_db,
@@ -321,3 +341,128 @@ def test_google_ai_is_recorded_as_structurally_undefined(fake_db):
     assert "D-042" in google.notes
     assert "undefined for it rather than failed" in google.notes
     assert "google_ai" not in run.eligible_platforms
+
+
+# ---------------------------------------------------------------------
+# D-085 — the gate derives prompt_set_version from its plans and refuses
+# on disagreement. Guards a permanent wrong provenance stamp on an
+# append-only, score-bearing row (calibration_results, §9).
+# ---------------------------------------------------------------------
+
+
+def _gate_fixture(fake_db, *, api_version, consumer_version, seed_plans=True):
+    api_plan, consumer_plan = str(uuid.uuid4()), str(uuid.uuid4())
+    prompt_version_id = str(uuid.uuid4())
+    api_rows = [
+        observation(api_plan, prompt_version_id, "openai", i, LAYER_API) for i in range(3)
+    ]
+    consumer_rows = [
+        observation(consumer_plan, prompt_version_id, "openai", i, LAYER_CONSUMER)
+        for i in range(3)
+    ]
+    fake_db.seed("observations", api_rows + consumer_rows)
+    fake_db.seed(
+        "recommendations",
+        [recommendation(r["id"], 1.00, "ranked", rank=1) for r in api_rows + consumer_rows],
+    )
+    if seed_plans:
+        fake_db.seed(
+            "run_plans",
+            [
+                {
+                    "id": api_plan,
+                    "run_type": "frozen_core",
+                    "surface_layer": LAYER_API,
+                    "prompt_set_version": api_version,
+                },
+                {
+                    "id": consumer_plan,
+                    "run_type": "frozen_core",
+                    "surface_layer": LAYER_CONSUMER,
+                    "prompt_set_version": consumer_version,
+                },
+            ],
+        )
+    return api_plan, consumer_plan
+
+
+def _run_gate(fake_db, api_plan, consumer_plan, claimed):
+    return run_gate(
+        fake_db,
+        calibration_run_id="cal-01",
+        property_id=str(uuid.uuid4()),
+        market_id=str(uuid.uuid4()),
+        prompt_set_version=claimed,
+        api_run_plan_ids=[api_plan],
+        consumer_run_plan_ids=[consumer_plan],
+        persist=False,
+    )
+
+
+def test_gate_accepts_a_version_its_plans_agree_with(fake_db):
+    plans = _gate_fixture(fake_db, api_version="v1.0", consumer_version="v1.0")
+    run = _run_gate(fake_db, *plans, "v1.0")
+    assert run.prompt_set_version == "v1.0"
+
+
+def test_gate_refuses_a_version_its_plans_contradict(fake_db):
+    """The typo case. Nothing downstream would have noticed."""
+    plans = _gate_fixture(fake_db, api_version="v1.0", consumer_version="v1.0")
+    with pytest.raises(ValueError) as exc:
+        _run_gate(fake_db, *plans, "v1.O")
+    assert "record 'v1.0'" in str(exc.value)
+    assert "D-085" in str(exc.value)
+
+
+def test_gate_refuses_when_the_two_layers_measure_different_sets(fake_db):
+    """A paired §8.4 comparison between plans measuring different prompt sets
+    is not a comparison at all."""
+    plans = _gate_fixture(fake_db, api_version="v1.0", consumer_version="v2.0")
+    with pytest.raises(ValueError) as exc:
+        _run_gate(fake_db, *plans, "v1.0")
+    assert "more than one prompt_set_version" in str(exc.value)
+
+
+def test_gate_refuses_a_plan_with_no_recorded_version(fake_db):
+    """D-084's column is nullable. The gate cannot derive what was never
+    recorded, so it refuses rather than falling back to the argument."""
+    plans = _gate_fixture(fake_db, api_version="v1.0", consumer_version=None)
+    with pytest.raises(ValueError) as exc:
+        _run_gate(fake_db, *plans, "v1.0")
+    assert "record no prompt_set_version" in str(exc.value)
+
+
+def test_gate_refuses_a_run_plan_id_that_does_not_exist(fake_db):
+    plans = _gate_fixture(
+        fake_db, api_version="v1.0", consumer_version="v1.0", seed_plans=False
+    )
+    with pytest.raises(ValueError) as exc:
+        _run_gate(fake_db, *plans, "v1.0")
+    assert "do not exist" in str(exc.value)
+
+
+def test_gate_checks_the_version_before_writing_anything(fake_db):
+    """Fail-closed: the refusal lands before load_cells, the gate maths and
+    write_calibration_run, so a contradicted call leaves no partial record."""
+    plans = _gate_fixture(fake_db, api_version="v1.0", consumer_version="v1.0")
+    with pytest.raises(ValueError):
+        run_gate(
+            fake_db,
+            calibration_run_id="cal-01",
+            property_id=str(uuid.uuid4()),
+            market_id=str(uuid.uuid4()),
+            prompt_set_version="wrong",
+            api_run_plan_ids=[plans[0]],
+            consumer_run_plan_ids=[plans[1]],
+            persist=True,
+        )
+    assert fake_db.tables.get("calibration_results", []) == []
+
+
+def test_gate_refuses_a_blank_recorded_version(fake_db):
+    """'' is a different mistake from NULL — something wrote an empty version
+    rather than nobody writing one — and both are refused."""
+    plans = _gate_fixture(fake_db, api_version="v1.0", consumer_version="   ")
+    with pytest.raises(ValueError) as exc:
+        _run_gate(fake_db, *plans, "v1.0")
+    assert "record no prompt_set_version" in str(exc.value)

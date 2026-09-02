@@ -76,6 +76,11 @@ def campaign(fake_db):
                 "run_type": "frozen_core",
                 "replicate_count": 3,
                 "status": "planned",
+                "surface_layer": "consumer",
+                # D-084/D-085: a Layer B plan records the prompt set it
+                # measures, and validate() now refuses to file a capture under
+                # a plan whose version disagrees with the sheet's.
+                "prompt_set_version": FROZEN_CORE,
             }
         ],
     )
@@ -648,3 +653,45 @@ def test_validate_refuses_when_the_prompt_set_is_not_seeded(fake_db, campaign, s
     )
     assert not report.ok
     assert "refusing to ingest" in str(report.errors[0])
+
+
+# ---------------------------------------------------------------------
+# D-085 — the sheet's prompt set and the plan's must agree. validate()
+# previously read the plan for replicate_count and the prompt set for the
+# verified ids, and never connected the two.
+# ---------------------------------------------------------------------
+
+
+def test_refuses_a_sheet_whose_prompt_set_differs_from_the_plan(
+    fake_db, campaign, screenshot
+):
+    fake_db.tables["run_plans"][0]["prompt_set_version"] = "frozen-core-other-v1"
+
+    report = validate(fake_db, sheet(campaign, screenshot, count=1), campaign["run_plan_id"])
+
+    assert not report.ok
+    joined = " ".join(str(e) for e in report.errors)
+    assert "measures prompt set 'frozen-core-other-v1'" in joined
+    assert "D-085" in joined
+
+
+def test_refuses_a_plan_that_records_no_prompt_set(fake_db, campaign, screenshot):
+    """The nullable column reaching ingest. Refused rather than skipped, so a
+    capture cannot be filed under a plan whose prompt set is unknown."""
+    fake_db.tables["run_plans"][0]["prompt_set_version"] = None
+
+    report = validate(fake_db, sheet(campaign, screenshot, count=1), campaign["run_plan_id"])
+
+    assert not report.ok
+    assert "records no prompt_set_version" in " ".join(str(e) for e in report.errors)
+
+
+def test_refuses_a_plan_recording_a_blank_prompt_set(fake_db, campaign, screenshot):
+    """Matches run._check_prompt_set_version: '' and whitespace are refused the
+    same way NULL is, so a plan the gate would refuse cannot be ingested into."""
+    fake_db.tables["run_plans"][0]["prompt_set_version"] = "   "
+
+    report = validate(fake_db, sheet(campaign, screenshot, count=1), campaign["run_plan_id"])
+
+    assert not report.ok
+    assert "records no prompt_set_version" in " ".join(str(e) for e in report.errors)

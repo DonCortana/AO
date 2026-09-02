@@ -55,6 +55,26 @@ def _now() -> str:
     return (_EPOCH + timedelta(seconds=next(_CLOCK))).isoformat()
 
 
+# NOT NULL DEFAULT columns the application logic actually depends on, applied
+# on insert/upsert the way Postgres would. `surface_layer` earns its place
+# here for the same reason `created_at` does: reuse matching in
+# atlas.calibration.driver and atlas.calibration.consumer_run_plan filters on
+# it (D-082), and a writer that omits the key gets 'api' from migration 0005
+# (observations) / 0010 (run_plans) rather than NULL. Without this the fake
+# reports "no reusable plan" for a row the real database would match, which
+# is a failure mode of the double, not of the code under test.
+_COLUMN_DEFAULTS: dict[str, dict[str, object]] = {
+    "observations": {"surface_layer": "api"},
+    "run_plans": {"surface_layer": "api"},
+}
+
+
+def _apply_defaults(table_name: str, row: dict) -> dict:
+    for column, value in _COLUMN_DEFAULTS.get(table_name, {}).items():
+        row.setdefault(column, value)
+    return row
+
+
 @dataclass
 class _Result:
     data: list[dict]
@@ -175,7 +195,7 @@ class _Query:
             payloads = self.payload if isinstance(self.payload, list) else [self.payload]
             created = []
             for p in payloads:
-                row = dict(p)
+                row = _apply_defaults(self.table_name, dict(p))
                 row.setdefault("id", str(uuid.uuid4()))
                 row.setdefault("created_at", _now())
                 rows.append(row)
@@ -197,7 +217,7 @@ class _Query:
                     existing.update(p)
                     results.append(existing)
                 else:
-                    row = dict(p)
+                    row = _apply_defaults(self.table_name, dict(p))
                     row.setdefault("id", str(uuid.uuid4()))
                     row.setdefault("created_at", _now())
                     rows.append(row)

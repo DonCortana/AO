@@ -140,6 +140,11 @@ DATA_CLASS = "raw_ai_response"
 
 FROZEN_CORE_VERSION = "frozen-core-samujana-v1"
 
+# prompt_versions.set_type. Half of the D-083 prompt-set key; the other half is
+# market_id, which this module has no argument to supply and therefore asserts
+# rather than filters — see frozen_core_prompts.
+FROZEN_CORE_SET_TYPE = "frozen_core"
+
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -494,22 +499,51 @@ def _evidence_path_error(path: str, row_number: int) -> RowError | None:
 # ---------------------------------------------------------------------
 
 
-def frozen_core_prompts(db, version: str = FROZEN_CORE_VERSION) -> list[dict]:
+def frozen_core_prompts(
+    db,
+    version: str = FROZEN_CORE_VERSION,
+    *,
+    set_type: str = FROZEN_CORE_SET_TYPE,
+    market_id: str | None = None,
+) -> list[dict]:
     """The verified prompt set, read from the database rather than hardcoded.
 
     §5: the ten UUIDs are reused, never re-seeded. Reading them back by
     `version` is what makes "reused" checkable — a re-seeded set would show up
     here as eleven-plus rows or as ids the sheet does not name.
+
+    D-083 fixes the prompt-set key as (version, set_type, market_id), the same
+    key `driver._load_prompt_set` reads, so planning and ingest agree on what
+    the set is. This function previously selected on `version` alone while
+    treating the result as totally identifying — the contradiction D-083 names.
+
+    `market_id` is optional because no caller has one to give: `validate` knows
+    a run plan, `build_template_rows` knows a provider, and neither resolves to
+    a single market (a property may have several). Left None, this asserts what
+    it cannot filter — that the rows found span exactly one market — and raises
+    rather than returning an ambiguous set. Passing `market_id` explicitly is
+    the stronger form and is preferred wherever a caller can supply one.
     """
-    return (
+    query = (
         db.table("prompt_versions")
         .select("id,version,prompt_text,intent_tier,market_id")
         .eq("version", version)
-        .order("intent_tier")
-        .order("id")
-        .execute()
-        .data
+        .eq("set_type", set_type)
     )
+    if market_id is not None:
+        query = query.eq("market_id", market_id)
+    rows = query.order("intent_tier").order("id").execute().data
+
+    if market_id is None:
+        markets = {r.get("market_id") for r in rows}
+        if len(markets) > 1:
+            raise ValueError(
+                f"prompt set {version!r} (set_type={set_type!r}) spans "
+                f"{len(markets)} markets: {sorted(str(m) for m in markets)}. "
+                "D-083 keys a prompt set on (version, set_type, market_id), so "
+                "this is not one set — pass market_id to say which is meant."
+            )
+    return rows
 
 
 def validate(
@@ -545,13 +579,55 @@ def validate(
         )
         return report
 
-    plan_rows = db.table("run_plans").select("id,replicate_count").eq("id", run_plan_id).execute().data
+    plan_rows = (
+        db.table("run_plans")
+        .select("id,replicate_count,prompt_set_version")
+        .eq("id", run_plan_id)
+        .execute()
+        .data
+    )
     if not plan_rows:
         report.errors.append(
             RowError(1, None, f"run plan {run_plan_id} does not exist")
         )
         return report
     replicate_target = plan_rows[0].get("replicate_count") or 0
+
+    # D-085 — the same cross-check run_gate performs. This function already
+    # validated every sheet row against the prompt set at `prompt_set_version`
+    # and separately read the run plan for its replicate target, and never
+    # connected the two: nothing stopped a capture sheet for one prompt set
+    # being ingested into a plan measuring another, which would reach the gate
+    # as paired Layer A/Layer B cells that were never asking the same question.
+    # Explicit rather than falsy, matching run._check_prompt_set_version: NULL
+    # and '' are different mistakes — nobody recorded a version, versus
+    # something wrote an empty one — and both must fail here. The two checks
+    # were written in the same changeset and must agree on what "unrecorded"
+    # means, or a plan the gate refuses could still be ingested into.
+    plan_version = plan_rows[0].get("prompt_set_version")
+    if plan_version is None or not str(plan_version).strip():
+        report.errors.append(
+            RowError(
+                1,
+                None,
+                f"run plan {run_plan_id} records no prompt_set_version, so the "
+                f"sheet's {prompt_set_version!r} cannot be checked against it "
+                "(D-085). Backfill the plan before ingesting.",
+            )
+        )
+        return report
+    if plan_version != prompt_set_version:
+        report.errors.append(
+            RowError(
+                1,
+                None,
+                f"run plan {run_plan_id} measures prompt set {plan_version!r}, "
+                f"but this sheet is being ingested as {prompt_set_version!r}. "
+                "Refusing to file a capture under a plan for a different "
+                "prompt set (D-085).",
+            )
+        )
+        return report
 
     if not rows:
         _add_coverage_warnings(report, [], prompts, replicate_target)
