@@ -111,10 +111,10 @@ exception is D1, where naming the client is the entire point of a branded prompt
 | C3 | C | 0.60 | **names competitor** | Sandalwood Luxury Villas |
 | D1 | D | 0.30 | **branded** (names Samujana) | — |
 
-6 open-discovery · 4 competitor-naming (A3, B1, B2, C3)
+5 open-discovery (A1, A2, B3, C1, C2) · 4 competitor-naming (A3, B1, B2, C3) · 1 branded (D1)
 
 Per D-051, "only named-competitor prompts affected" — those four are the only
-rows carrying the new set. The six open-discovery prompts name no venue at all,
+rows carrying the new set. The five open-discovery prompts name no venue at all,
 so the competitor-set change does not touch them.
 
 ### Competitor coverage
