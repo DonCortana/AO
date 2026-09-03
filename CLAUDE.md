@@ -33,6 +33,13 @@ and `docs/atlas-execution-plan-v1.0.md`.
   decision referencing the one it retires. Methodology §10 requires
   decisions be documented *before* implementation. Check it before
   proposing anything that looks like a settled question; many are.
+- **External findings: `docs/external-findings.md`.** Append-only
+  F-series. Venue and market facts Atlas relies on but did not produce,
+  every row carrying provenance (Primary, Reported, Derived) and a source
+  URL. Do not write to this file: it is bucket two, and its value is that
+  every line is source-backed. Cite an F-row rather than restating an
+  external fact from memory; if a needed fact is absent, say so rather
+  than supplying it.
 - **Current plan: `docs/atlas-action-plan-v2.0-2026-09-01.md`.** The
   locked sequence to v1.0-MVP freeze, with dated phases.
 
