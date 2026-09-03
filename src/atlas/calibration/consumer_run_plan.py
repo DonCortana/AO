@@ -100,10 +100,42 @@ Not shared, by design:
   child rows, so an uncaptured or partially captured plan is found rather than
   duplicated. The observations match survives only as a fallback for rows
   whose column is null. See the function's own docstring.
+
+## Manifest fields written at insert (D-090)
+
+`provider_scope` (D-086) and `market_id` (D-087/D-089) join `surface_layer`
+(D-081) and `prompt_set_version` (D-084) as facts this module records ON the
+plan rather than leaving to be inferred from the observations `consumer_ingest`
+later writes. D-090 states the general rule; migration 0012 adds the two
+columns and, since D-098, two VALIDATED CHECK constraints:
+
+    check (run_type <> 'frozen_core' or provider_scope is not null)
+    check (run_type <> 'frozen_core' or market_id is not null)
+
+This module writes `run_type = 'frozen_core'` unconditionally, so before this
+change every `--commit` here would have been rejected by Postgres:
+`market_id` was accepted as an argument, used only to check the prompt rows'
+market inside `_check_prompts`, and then discarded at insert; `provider_scope`
+had no parameter at all. The gap was invisible while it lasted because the one
+Layer B plan that ever existed, d2b1c8a3, was inserted before migration 0012
+and deleted under D-098 before it applied.
+
+**`provider_scope` is required and has no default.** Layer A's
+`plan_calibration_run` can reasonably default to `DEFAULT_PROVIDERS` because
+its four adapters are the whole of what it is able to call. Layer B's surfaces
+are a scope decision, not a capability: migration 0005 (D-043) widened the
+vocabulary to five for consumer capture, `google_ai` among them, and D-086(b)
+is the record of what an unexamined Layer B scope costs — d2b1c8a3 was scoped
+at four consumer surfaces against a one-platform Layer A, leaving three
+surfaces with no pairable API leg and the §8.4 gate undefined for them, which
+went unnoticed for six days. A default here would be that same unexamined
+choice with a friendlier spelling. The caller states the scope; D-090's Scope
+Parity Gate is what checks it against the Layer A leg.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from atlas.calibration.driver import (
@@ -126,6 +158,25 @@ DEFAULT_REPLICATE_COUNT = 3
 
 SURFACE_LAYER = "consumer"
 
+# Migration 0005 (D-043) widened observations.provider to these five for Layer
+# B. `google_ai` is consumer-only under observations_google_ai_is_consumer_only
+# and is therefore legal in a Layer B scope and illegal in a Layer A one — the
+# asymmetry is the point, and is why this is not driver.DEFAULT_PROVIDERS.
+#
+# Legal here is not the same as pairable at the §8.4 gate: `google_ai`
+# publishes no API, so a Layer B scope naming it has no Layer A counterpart to
+# pair with (structurally the D-042 condition). This module does not enforce
+# parity — that is D-090's Scope Parity Gate, which sees both legs. It enforces
+# only that a named surface is one migration 0005 will accept on the
+# observations the capture eventually produces.
+CONSUMER_SURFACES: tuple[str, ...] = (
+    "openai",
+    "gemini",
+    "perplexity",
+    "anthropic",
+    "google_ai",
+)
+
 
 class ConsumerPreflightError(PreflightError):
     """Same shape as `atlas.calibration.driver.PreflightError` (fail-closed,
@@ -138,16 +189,22 @@ class ConsumerPreflightError(PreflightError):
 class ConsumerRunPlan:
     """What this module planned, or would plan on a dry run.
 
-    No `providers` or `window_*` fields, unlike Layer A's `CalibrationPlan`:
-    `run_plans` carries no provider column, and window_start/window_end are
-    always null at this stage (D-062) — there is nothing to report until the
-    later post-capture update writes them.
+    No `window_*` fields, unlike Layer A's `CalibrationPlan`:
+    window_start/window_end are always null at this stage (D-062) — there is
+    nothing to report until the later post-capture update writes them.
+
+    `provider_scope` and `market_id` are reported because migration 0012 gave
+    `run_plans` columns for both (D-086/D-087) and this module now writes
+    them. The previous version of this docstring said `run_plans` "carries no
+    provider column", which was true when it was written and is not true now.
     """
 
     run_plan_id: str | None
     property_id: str
+    market_id: str
     prompt_set_version: str
     prompt_version_ids: tuple[str, ...]
+    provider_scope: tuple[str, ...]
     replicate_count: int
     reused: bool
     committed: bool
@@ -206,7 +263,8 @@ def _find_reusable_consumer_run_plan(
         db.table("run_plans")
         .select(
             "id, property_id, run_type, replicate_count, status, "
-            "surface_layer, prompt_set_version, planned_at"
+            "surface_layer, prompt_set_version, provider_scope, market_id, "
+            "planned_at"
         )
         .eq("property_id", property_id)
         .eq("run_type", RUN_TYPE)
@@ -250,6 +308,55 @@ def _find_reusable_consumer_run_plan(
     return None
 
 
+def _manifest_mismatches(
+    existing: dict,
+    *,
+    replicate_count: int,
+    provider_scope: tuple[str, ...],
+    market_id: str,
+) -> list[str]:
+    """Every way a reusable plan disagrees with the invocation reusing it.
+
+    All of them, not the first: the same fail-closed posture as
+    `ConsumerPreflightError` itself, so one re-run shows the whole
+    disagreement rather than one field per attempt.
+
+    `provider_scope` is compared as a set. The column is `text[]` and order in
+    it carries no meaning — a scope is which surfaces, not which order — so an
+    ordering difference is not a disagreement, while a membership difference
+    is. `market_id` and `replicate_count` compare directly.
+
+    A `None` on the existing row is a real mismatch and is reported as one. It
+    can only occur on a plan written before migration 0012, and D-098 records
+    that the only such Layer B plan was deleted rather than backfilled
+    precisely because its correct values were not recoverable — so "null" here
+    means "this plan predates the column and nobody can say what it was
+    scoped at", which is not something to quietly accept as agreement.
+    """
+    mismatches: list[str] = []
+
+    if existing.get("replicate_count") != replicate_count:
+        mismatches.append(
+            f"replicate_count is {existing.get('replicate_count')}, "
+            f"asked for {replicate_count}"
+        )
+
+    recorded_scope = existing.get("provider_scope")
+    if recorded_scope is None or set(recorded_scope) != set(provider_scope):
+        shown = "null" if recorded_scope is None else ", ".join(sorted(recorded_scope))
+        mismatches.append(
+            f"provider_scope is [{shown}], asked for "
+            f"[{', '.join(sorted(provider_scope))}]"
+        )
+
+    if existing.get("market_id") != market_id:
+        mismatches.append(
+            f"market_id is {existing.get('market_id')}, asked for {market_id}"
+        )
+
+    return mismatches
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -261,6 +368,7 @@ def create_consumer_run_plan(
     property_id: str,
     prompt_version_ids: list[str],
     market_id: str,
+    provider_scope: Sequence[str],
     replicate_count: int = DEFAULT_REPLICATE_COUNT,
     commit: bool = False,
     new_plan: bool = False,
@@ -279,8 +387,15 @@ def create_consumer_run_plan(
     `run_plan_id` names the plan to reuse, mirroring Layer A again. It is how
     an ambiguous D-084 key is resolved once `new_plan=True` has produced two
     plans at the same key. Mutually exclusive with `new_plan`.
+
+    `provider_scope` is the consumer surfaces this plan will be captured on
+    (D-086, migration 0012). Keyword-required with no default — see the module
+    docstring for why Layer A's `DEFAULT_PROVIDERS` convention is deliberately
+    not mirrored here. `market_id` is now written to the plan as well as
+    checked against the prompt rows (D-087/D-089).
     """
     prompt_ids_t = tuple(prompt_version_ids)
+    scope_t = tuple(provider_scope)
 
     failures: list[str] = []
 
@@ -297,6 +412,34 @@ def create_consumer_run_plan(
     if duplicates:
         failures.append(
             "prompt_version_ids contains duplicates: " + ", ".join(duplicates)
+        )
+
+    # provider_scope (D-086). Checked here rather than left to the database
+    # because migration 0012's CHECK only tests for NULL — an empty array, a
+    # duplicate or a misspelled surface all satisfy it and would be recorded
+    # as this plan's scope, and D-090's parity gate would then compare the
+    # Layer A leg against a value nobody meant.
+    if not scope_t:
+        failures.append(
+            "provider_scope is empty. Migration 0012's "
+            "run_plans_frozen_core_has_provider_scope CHECK accepts an empty "
+            "array, so a scopeless frozen_core plan is a defect this check "
+            "has to catch rather than the database."
+        )
+    scope_duplicates = sorted({p for p in scope_t if scope_t.count(p) > 1})
+    if scope_duplicates:
+        failures.append(
+            "provider_scope contains duplicates: " + ", ".join(scope_duplicates)
+        )
+    unknown_surfaces = sorted(set(scope_t) - set(CONSUMER_SURFACES))
+    if unknown_surfaces:
+        failures.append(
+            "provider_scope names surfaces outside the migration 0005 (D-043) "
+            "vocabulary: "
+            + ", ".join(unknown_surfaces)
+            + ". Legal values are "
+            + ", ".join(CONSUMER_SURFACES)
+            + "."
         )
 
     prop = _load_property(db, property_id)
@@ -340,19 +483,32 @@ def create_consumer_run_plan(
             db, property_id, prompt_ids_t, version
         )
 
-    if existing is not None and existing.get("replicate_count") != replicate_count:
-        raise ConsumerPreflightError(
-            [
-                (
-                    f"Layer B run plan {existing['id']} already exists for this "
-                    f"property and prompt set with replicate_count="
-                    f"{existing.get('replicate_count')}, but this invocation "
-                    f"asks for {replicate_count}. Re-run with the matching "
-                    "replicate count, or pass new_plan=True to plan a "
-                    "deliberate second Layer B run."
-                )
-            ]
+    if existing is not None:
+        # A reused plan must agree with this invocation on every manifest
+        # field, not on replicate_count alone. D-090 makes provider_scope and
+        # market_id manifest fields and has the §8.4 gate refuse legs that
+        # disagree on one; silently reusing a plan whose recorded scope
+        # differs from the scope asked for would hand that gate a plan whose
+        # column says one thing and whose operator intended another — the
+        # inference inversion D-081/D-086 exist to end, arriving through the
+        # reuse path instead of through the children.
+        mismatches = _manifest_mismatches(
+            existing,
+            replicate_count=replicate_count,
+            provider_scope=scope_t,
+            market_id=market_id,
         )
+        if mismatches:
+            raise ConsumerPreflightError(
+                [
+                    f"Layer B run plan {existing['id']} already exists for this "
+                    f"property and prompt set, but disagrees with this "
+                    f"invocation: "
+                    + "; ".join(mismatches)
+                    + ". Re-run with the matching values, or pass "
+                    "new_plan=True to plan a deliberate second Layer B run."
+                ]
+            )
 
     if existing is not None:
         notes.append(
@@ -377,8 +533,10 @@ def create_consumer_run_plan(
         return ConsumerRunPlan(
             run_plan_id=existing["id"] if existing else None,
             property_id=property_id,
+            market_id=market_id,
             prompt_set_version=version,
             prompt_version_ids=prompt_ids_t,
+            provider_scope=scope_t,
             replicate_count=replicate_count,
             reused=existing is not None,
             committed=False,
@@ -403,6 +561,16 @@ def create_consumer_run_plan(
                     # D-084: recorded at insert, which is what makes this
                     # plan findable before any capture is ingested against it.
                     "prompt_set_version": version,
+                    # D-086 / migration 0012: the consumer surfaces this plan
+                    # is scoped at, recorded on the plan rather than left to
+                    # be counted off the observations consumer_ingest writes.
+                    # A list, not a tuple: the Supabase client JSON-encodes
+                    # this value for a text[] column and a tuple is not JSON.
+                    "provider_scope": list(scope_t),
+                    # D-087 / D-089 / migration 0012: scalar, never an array —
+                    # market determines the capture configuration itself, so a
+                    # plan measures exactly one market by construction.
+                    "market_id": market_id,
                     # D-062: retrospective window, unknown until every
                     # replicate is captured. Never a placeholder.
                     "window_start": None,
@@ -421,8 +589,10 @@ def create_consumer_run_plan(
     return ConsumerRunPlan(
         run_plan_id=run_plan_id,
         property_id=property_id,
+        market_id=market_id,
         prompt_set_version=version,
         prompt_version_ids=prompt_ids_t,
+        provider_scope=scope_t,
         replicate_count=replicate_count,
         reused=existing is not None,
         committed=True,

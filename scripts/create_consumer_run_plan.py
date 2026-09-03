@@ -3,6 +3,7 @@
     # dry run: every preflight check runs, nothing is written (default)
     python scripts/create_consumer_run_plan.py \
         --property <uuid> --market <uuid> \
+        --surface openai --surface gemini ... \
         --prompt <uuid> --prompt <uuid> ...
 
     # write the run_plans row
@@ -18,6 +19,12 @@ each carrying surface_layer='consumer'. window_start/window_end are always
 null at insert (D-062) — the real window is only known after every
 replicate has been captured, and this script does not perform that later
 update.
+
+`--surface` is required and repeatable: it becomes run_plans.provider_scope
+(D-086, migration 0012), which has no default at Layer B because the consumer
+surfaces are a scope decision rather than a capability list. See the library
+module's docstring. `--market` is now written to the plan as well as checked
+against the prompt rows (D-087/D-089).
 """
 
 from __future__ import annotations
@@ -40,6 +47,16 @@ def main() -> int:
     parser.add_argument("--property", required=True, help="properties.id (uuid)")
     parser.add_argument("--market", required=True, help="markets.id (uuid)")
     parser.add_argument(
+        "--surface",
+        action="append",
+        default=[],
+        dest="surfaces",
+        metavar="NAME",
+        help="a consumer surface this plan is scoped at; repeat once per "
+        "surface. Written to run_plans.provider_scope (D-086). Required: "
+        "there is deliberately no default — see the module docstring",
+    )
+    parser.add_argument(
         "--prompt",
         action="append",
         default=[],
@@ -61,6 +78,14 @@ def main() -> int:
         "and prompt set already have one",
     )
     parser.add_argument(
+        "--run-plan-id",
+        default=None,
+        metavar="UUID",
+        help="reuse this specific plan. How an ambiguous D-084 reuse key is "
+        "resolved once --new-plan has produced two plans at the same key; "
+        "without it that state is unrecoverable from this CLI",
+    )
+    parser.add_argument(
         "--commit",
         action="store_true",
         help="actually write the row (default is a dry run that writes nothing)",
@@ -73,8 +98,10 @@ def main() -> int:
             property_id=args.property,
             prompt_version_ids=args.prompts,
             market_id=args.market,
+            provider_scope=args.surfaces,
             replicate_count=args.replicates,
             new_plan=args.new_plan,
+            run_plan_id=args.run_plan_id,
             commit=args.commit,
         )
     except ConsumerPreflightError as exc:
@@ -83,6 +110,8 @@ def main() -> int:
 
     print(f"prompt set version : {plan.prompt_set_version}")
     print(f"prompts            : {len(plan.prompt_version_ids)}")
+    print(f"market             : {plan.market_id}")
+    print(f"provider scope     : {', '.join(plan.provider_scope) or '(none)'}")
     print(f"replicates (target): {plan.replicate_count}")
     print(f"run plan           : {plan.run_plan_id or '(would be created)'}")
     print(f"reused existing    : {plan.reused}")

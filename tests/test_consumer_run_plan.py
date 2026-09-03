@@ -21,12 +21,19 @@ import uuid
 import pytest
 
 from atlas.calibration.consumer_run_plan import (
+    CONSUMER_SURFACES,
     DEFAULT_REPLICATE_COUNT,
     SURFACE_LAYER,
     ConsumerPreflightError,
     ConsumerRunPlan,
     create_consumer_run_plan,
 )
+
+# The scope these tests plan at unless a test is about scope itself. Four
+# surfaces rather than all five of CONSUMER_SURFACES: this is a stand-in for a
+# real scope, and picking the whole vocabulary would make a test that should
+# fail on a membership difference pass on the fact that nothing is left out.
+SCOPE = ("openai", "gemini", "perplexity", "anthropic")
 
 # Layer A's default (driver.DEFAULT_REPLICATE_COUNT). Named here because two
 # tests turn on whether it agrees with Layer B's 3: per D-082, a disagreeing
@@ -102,6 +109,7 @@ def _create(calibration, **overrides):
         property_id=calibration["property_id"],
         prompt_version_ids=calibration["prompt_ids"],
         market_id=calibration["market_id"],
+        provider_scope=SCOPE,
     )
     kwargs.update(overrides)
     return create_consumer_run_plan(calibration["db"], **kwargs)
@@ -346,8 +354,8 @@ def test_replicate_count_mismatch_raises(calibration):
         _create(calibration, commit=True, replicate_count=4)
 
     message = "\n".join(exc.value.failures)
-    assert "replicate_count=3" in message
-    assert "asks for 4" in message
+    assert "replicate_count is 3" in message
+    assert "asked for 4" in message
     assert "new_plan=True" in message
     # Fail-closed: the refused invocation wrote nothing.
     assert len(db.tables["run_plans"]) == 1
@@ -439,6 +447,8 @@ def test_a_plan_recording_a_different_version_is_not_reused(calibration):
                 "replicate_count": DEFAULT_REPLICATE_COUNT,
                 "status": "planned",
                 "surface_layer": "consumer",
+                "provider_scope": list(SCOPE),
+                "market_id": calibration["market_id"],
                 "prompt_set_version": "fc-v0.9",
             }
         ],
@@ -475,6 +485,8 @@ def test_null_version_plan_is_reused_via_the_observations_fallback(calibration):
                 "replicate_count": DEFAULT_REPLICATE_COUNT,
                 "status": "planned",
                 "surface_layer": "consumer",
+                "provider_scope": list(SCOPE),
+                "market_id": calibration["market_id"],
                 "prompt_set_version": None,
             }
         ],
@@ -503,6 +515,8 @@ def test_null_version_plan_with_a_different_set_is_not_reused(calibration):
                 "replicate_count": DEFAULT_REPLICATE_COUNT,
                 "status": "planned",
                 "surface_layer": "consumer",
+                "provider_scope": list(SCOPE),
+                "market_id": calibration["market_id"],
                 "prompt_set_version": None,
             }
         ],
@@ -533,6 +547,8 @@ def test_null_version_plan_with_no_observations_is_not_reused(calibration):
                 "replicate_count": DEFAULT_REPLICATE_COUNT,
                 "status": "planned",
                 "surface_layer": "consumer",
+                "provider_scope": list(SCOPE),
+                "market_id": calibration["market_id"],
                 "prompt_set_version": None,
             }
         ],
@@ -560,6 +576,8 @@ def test_a_keyed_plan_wins_over_a_matching_null_plan(calibration):
                 "replicate_count": DEFAULT_REPLICATE_COUNT,
                 "status": "planned",
                 "surface_layer": "consumer",
+                "provider_scope": list(SCOPE),
+                "market_id": calibration["market_id"],
                 "prompt_set_version": None,
             }
         ],
@@ -620,3 +638,197 @@ def test_run_plan_id_and_new_plan_together_are_refused(calibration):
     with pytest.raises(ConsumerPreflightError) as exc:
         _create(calibration, run_plan_id=str(uuid.uuid4()), new_plan=True)
     assert "mutually exclusive" in "\n".join(exc.value.failures)
+
+
+# ---------------------------------------------------------------------------
+# Manifest fields — provider_scope and market_id (D-086/D-087/D-089/D-090,
+# migration 0012). Two VALIDATED CHECK constraints reject a frozen_core plan
+# with either column null, and FakeDB emulates no constraint at all (D-094),
+# so what these prove is that the module writes the values — not that the
+# database would have refused it. The negative half of that is a live test.
+# ---------------------------------------------------------------------------
+
+
+def test_insert_records_provider_scope_and_market_id(calibration):
+    db = calibration["db"]
+
+    plan = _create(calibration, commit=True)
+
+    row = db.tables["run_plans"][0]
+    assert row["provider_scope"] == list(SCOPE)
+    assert row["market_id"] == calibration["market_id"]
+    assert plan.provider_scope == SCOPE
+    assert plan.market_id == calibration["market_id"]
+
+
+def test_provider_scope_is_written_as_a_list_not_a_tuple(calibration):
+    """The column is text[] and the Supabase client JSON-encodes the value;
+    a tuple is not JSON."""
+    db = calibration["db"]
+    _create(calibration, commit=True, provider_scope=("openai", "gemini"))
+
+    assert db.tables["run_plans"][0]["provider_scope"] == ["openai", "gemini"]
+
+
+def test_dry_run_reports_the_scope_and_market_it_would_write(calibration):
+    plan = _create(calibration, commit=False)
+
+    assert plan.committed is False
+    assert plan.provider_scope == SCOPE
+    assert plan.market_id == calibration["market_id"]
+
+
+def test_empty_provider_scope_is_refused(calibration):
+    """Migration 0012's CHECK tests for NULL only, so an empty array satisfies
+    the database and would be recorded as this plan's scope."""
+    db = calibration["db"]
+
+    with pytest.raises(ConsumerPreflightError) as exc:
+        _create(calibration, commit=True, provider_scope=())
+
+    assert "provider_scope is empty" in "\n".join(exc.value.failures)
+    assert db.tables.get("run_plans", []) == []
+
+
+def test_provider_scope_outside_the_migration_0005_vocabulary_is_refused(calibration):
+    db = calibration["db"]
+
+    with pytest.raises(ConsumerPreflightError) as exc:
+        _create(calibration, commit=True, provider_scope=("openai", "chatgpt"))
+
+    message = "\n".join(exc.value.failures)
+    assert "chatgpt" in message
+    assert "openai" not in message.split("outside")[0]
+    assert db.tables.get("run_plans", []) == []
+
+
+def test_duplicate_surfaces_in_provider_scope_are_refused(calibration):
+    with pytest.raises(ConsumerPreflightError) as exc:
+        _create(calibration, commit=True, provider_scope=("openai", "openai"))
+
+    assert "provider_scope contains duplicates" in "\n".join(exc.value.failures)
+
+
+def test_google_ai_is_legal_in_a_layer_b_scope(calibration):
+    """Consumer-only under observations_google_ai_is_consumer_only (D-042/
+    D-043), so it is legal here and would be illegal at Layer A. Whether it is
+    *pairable* at the §8.4 gate is D-090's parity question, not this module's."""
+    db = calibration["db"]
+
+    _create(calibration, commit=True, provider_scope=("openai", "google_ai"))
+
+    assert db.tables["run_plans"][0]["provider_scope"] == ["openai", "google_ai"]
+
+
+def test_every_consumer_surface_constant_is_acceptable(calibration):
+    _create(calibration, commit=True, provider_scope=CONSUMER_SURFACES)
+
+
+def test_consumer_surfaces_matches_migration_0005_vocabulary():
+    assert set(CONSUMER_SURFACES) == {
+        "openai",
+        "gemini",
+        "perplexity",
+        "anthropic",
+        "google_ai",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reuse must agree on the manifest, not on replicate_count alone
+# ---------------------------------------------------------------------------
+
+
+def test_reuse_with_a_different_provider_scope_is_refused(calibration):
+    db = calibration["db"]
+    _create(calibration, commit=True, provider_scope=("openai", "gemini"))
+
+    with pytest.raises(ConsumerPreflightError) as exc:
+        _create(calibration, commit=True, provider_scope=("openai", "anthropic"))
+
+    message = "\n".join(exc.value.failures)
+    assert "provider_scope is [gemini, openai]" in message
+    assert "asked for [anthropic, openai]" in message
+    assert len(db.tables["run_plans"]) == 1
+
+
+def test_reuse_ignores_provider_scope_ordering(calibration):
+    """The column is a set of surfaces, not a sequence — an ordering
+    difference is not a disagreement."""
+    db = calibration["db"]
+    first = _create(calibration, commit=True, provider_scope=("openai", "gemini"))
+
+    second = _create(calibration, commit=True, provider_scope=("gemini", "openai"))
+
+    assert second.reused is True
+    assert second.run_plan_id == first.run_plan_id
+    assert len(db.tables["run_plans"]) == 1
+
+
+def test_a_plan_with_a_null_provider_scope_is_not_silently_reused(calibration):
+    """A pre-migration-0012 row. D-098 deleted the only live one rather than
+    backfilling it, because its correct scope was not recoverable — so a null
+    here means "nobody can say", which is not agreement."""
+    db = calibration["db"]
+    legacy_id = str(uuid.uuid4())
+    db.seed(
+        "run_plans",
+        [
+            {
+                "id": legacy_id,
+                "property_id": calibration["property_id"],
+                "run_type": "frozen_core",
+                "replicate_count": DEFAULT_REPLICATE_COUNT,
+                "status": "planned",
+                "surface_layer": "consumer",
+                "provider_scope": None,
+                "market_id": None,
+                "prompt_set_version": "fc-v1.0",
+            }
+        ],
+    )
+
+    with pytest.raises(ConsumerPreflightError) as exc:
+        _create(calibration, commit=True)
+
+    message = "\n".join(exc.value.failures)
+    assert "provider_scope is [null]" in message
+    assert len(db.tables["run_plans"]) == 1
+
+
+def test_every_manifest_disagreement_is_reported_at_once(calibration):
+    """Fail-closed in the same shape as preflight itself: one re-run shows the
+    whole disagreement rather than one field per attempt."""
+    _create(
+        calibration,
+        commit=True,
+        replicate_count=3,
+        provider_scope=("openai", "gemini"),
+    )
+
+    with pytest.raises(ConsumerPreflightError) as exc:
+        _create(
+            calibration,
+            commit=True,
+            replicate_count=4,
+            provider_scope=("anthropic",),
+        )
+
+    message = "\n".join(exc.value.failures)
+    assert "replicate_count is 3" in message
+    assert "provider_scope is [gemini, openai]" in message
+
+
+def test_new_plan_bypasses_the_manifest_guard(calibration):
+    """A deliberate second Layer B run at a different scope is what
+    new_plan=True is for; the guard governs reuse, not creation."""
+    db = calibration["db"]
+    _create(calibration, commit=True, provider_scope=("openai",))
+
+    plan = _create(
+        calibration, commit=True, new_plan=True, provider_scope=("anthropic",)
+    )
+
+    assert plan.reused is False
+    assert len(db.tables["run_plans"]) == 2
+    assert db.tables["run_plans"][1]["provider_scope"] == ["anthropic"]

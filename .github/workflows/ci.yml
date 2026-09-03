@@ -80,23 +80,38 @@ jobs:
         run: python scripts/check_migration_sequence.py
 
       - name: Tests
-        # The claim_task acceptance tests deselect themselves when
+        # The real-Postgres acceptance tests deselect themselves when
         # ATLAS_TEST_DATABASE_URL is unset. It is set above, so they must run
         # here — the next step proves they were not silently skipped.
         run: pytest -q
 
       - name: Assert the real-Postgres acceptance tests actually ran
+        # Listed by path, and the list is the thing to extend when a new
+        # real-Postgres file is added. A file absent from it still runs under
+        # `pytest -q` above, but would skip silently on a misconfigured DSN —
+        # which is the exact failure this step exists to catch, so an
+        # unlisted file has the guard without the guarantee.
+        #
+        #   test_claim_task_postgres          — migration 0009 claim_task,
+        #     FOR UPDATE SKIP LOCKED and the retry ceiling (Phase A spec §7).
+        #   test_run_plans_constraints_postgres — migration 0012's two CHECKs
+        #     and market_id's foreign key. D-094 names a live negative test as
+        #     the acceptance criterion for these and records that a passing
+        #     FakeDB suite is not evidence about any constraint.
         run: |
-          collected=$(pytest tests/test_claim_task_postgres.py --collect-only -q | tail -1)
-          echo "collected: $collected"
-          pytest tests/test_claim_task_postgres.py -q --no-header \
-            | tee /tmp/pg-tests.log
-          if grep -qiE "[0-9]+ skipped" /tmp/pg-tests.log; then
-            echo "::error::claim_task acceptance tests were SKIPPED in CI."
-            echo "::error::ATLAS_TEST_DATABASE_URL is not reaching them, so the"
-            echo "::error::concurrency guarantees are unverified. Failing closed."
-            exit 1
-          fi
+          set -euo pipefail
+          for f in tests/test_claim_task_postgres.py \
+                   tests/test_run_plans_constraints_postgres.py; do
+            collected=$(pytest "$f" --collect-only -q | tail -1)
+            echo "collected ($f): $collected"
+            pytest "$f" -q --no-header | tee /tmp/pg-tests.log
+            if grep -qiE "[0-9]+ skipped" /tmp/pg-tests.log; then
+              echo "::error::$f was SKIPPED in CI."
+              echo "::error::ATLAS_TEST_DATABASE_URL is not reaching it, so the"
+              echo "::error::guarantees it proves are unverified. Failing closed."
+              exit 1
+            fi
+          done
 
       - name: Smoke test (offline)
         # Exercises plan -> claim -> finalize -> evidence freeze gate against

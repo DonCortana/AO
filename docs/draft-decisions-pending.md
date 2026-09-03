@@ -1,6 +1,6 @@
 # Draft Decisions — Pending Acceptance
 
-These are **candidate texts**, not register entries. Per Methodology §10, a decision is documented in `docs/decision-register.md` (in-repo, committed) *before* implementation. Accept, edit, or reject each here, then register in-repo with the next available IDs. All three sections below are now registered; this file is retained as a pointer to their register IDs.
+These are **candidate texts**, not register entries. Per Methodology §10, a decision is documented in `docs/decision-register.md` (in-repo, committed) *before* implementation. Accept, edit, or reject each here, then register in-repo with the next available IDs. All four sections below are now registered; this file is retained as a pointer to their register IDs.
 
 ---
 
@@ -14,6 +14,11 @@ These are **candidate texts**, not register entries. Per Methodology §10, a dec
 
 > The conflicting factual records on the perplexity-web anonymous signup wall (D-066-era observations vs. the later roadblock brief) are resolved by a controlled matrix, not a spot check. Conditions: {direct residential connection, IPRoyal residential proxy} × 3 clean sessions each, identical prompt, browser, incognito/session and account state per D-059, executed within one 24-hour window. Recorded per session: UTC timestamp, IP geography and type, account state, browser/session state, wall outcome (gated / not gated), screenshot evidence per Layer B requirements. Outcome rules: wall reproduces in all six → perplexity-web has no anonymous access path; a D-067-pattern scoped logged-in profile (dedicated Atlas test account, memory off) is created as a new surface-profile version. Wall absent on direct but present via proxy → IP-reputation artifact; anonymous capture stands, proxy usage for perplexity-web is re-decided. Mixed/intermittent → anonymous access is treated as unstable and therefore not a reproducible protocol; the logged-in profile path is taken. The resulting decision explicitly names and supersedes whichever prior factual record the matrix disproves.
 
+## 4. REGISTERED AS D-100 — see decision-register.md
+
+The candidate text drafted here (Layer B `provider_scope` for the `frozen-core-samujana-v2` plan) is superseded by D-100 and removed. D-100 scopes the plan at `{openai, gemini, anthropic}` — three surfaces, perplexity-web excluded pending D-068 and D-069 — which is not the four-surface parity candidate this section proposed. Run plan `cb09f157-58d5-4a51-9faa-fba035e00199` was created under D-100 on 2026-09-03.
+
 ---
 
-**Registration order:** all three registered 2026-09-01 to 2026-09-03 — §1 as D-068, §2 as D-093 (Option A, presence-only, unblocking Phase C), §3 as D-069. All three followed the same-PR rule from Action Plan Phase B: register entry + impacted governing-doc updates land together.
+**Registration order:** all four registered 2026-09-01 to 2026-09-03 — §1 as D-068, §2 as D-093 (Option A, presence-only, unblocking Phase C), §3 as D-069, §4 as D-100 (three surfaces, not the four this file proposed). All four followed the same-PR rule from Action Plan Phase B: register entry + impacted governing-doc updates land together.
+
