@@ -409,8 +409,15 @@ def _load_named_run_plan(
     rows = (
         db.table("run_plans")
         .select(
+            # provider_scope and market_id (migration 0012) are selected but
+            # not checked here: this function decides whether a NAMED plan is
+            # a legitimate reuse candidate, and the manifest comparison
+            # belongs to the caller, which knows the scope it was asked for.
+            # Selecting them keeps that comparison possible — a caller cannot
+            # check a column this query did not return.
             "id, property_id, run_type, replicate_count, status, "
-            "surface_layer, prompt_set_version, planned_at"
+            "surface_layer, prompt_set_version, provider_scope, market_id, "
+            "planned_at"
         )
         .eq("id", run_plan_id)
         .execute()
