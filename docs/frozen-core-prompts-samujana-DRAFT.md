@@ -1,10 +1,13 @@
 # Frozen Core prompt set — Samujana
 
-**Status: SEEDED, not yet frozen.** Written to `prompt_versions` on 2026-08-28
-as version `frozen-core-samujana-v1` — 10 rows, `set_type='frozen_core'`,
-market TH/en, `is_holdout=false` on all ten. §7 locks intent, entity, tier and
-set membership the moment a baseline runs against these rows; no baseline has
-run yet, so the set is seeded but not yet frozen.
+**Status: v2 AGREED, not yet seeded.** Version `frozen-core-samujana-v1` was
+written to `prompt_versions` on 2026-08-28 — 10 rows, `set_type='frozen_core'`,
+market TH/en, `is_holdout=false` on all ten — and remains in the table untouched
+as the historical instrument that run plan 41f71293 measured. This document now
+describes `frozen-core-samujana-v2`: eleven rows, adding B4 per D-097. §7 locks
+intent, entity, tier and set membership the moment a baseline runs against a
+version's rows; no baseline has run against either version, so v2 is agreed but
+not yet frozen.
 
 Fresh draft — there was no prior draft set in the repo, in git history or in
 Drive, so nothing here is a revision of earlier text. D-051's "Replaces draft
@@ -18,11 +21,13 @@ does not exist as an artifact; this file is written to D-051's *constraint*
 | Category | Villa/Estate (free text — see profile-registry gap) |
 | Market / language | TH / en — `markets.id = 2d4854b9-5589-44a5-886b-c895e99c7b95` |
 | Set type | `frozen_core` |
-| Version | `frozen-core-samujana-v1` |
-| Prompt count | 10 (§7 allows 8–12 by profile) |
+| Version | `frozen-core-samujana-v2` (supersedes `-v1`, D-097) |
+| Prompt count | 11 (§7 allows 8–12 by profile) |
 | Competitor set | D-051 |
 
-Each row below is one `prompt_versions` row, written on 2026-08-28:
+Each row below is one `prompt_versions` row. A1–C3 and D1 were written on
+2026-08-28 at version `frozen-core-samujana-v1`; the v2 set including B4 is
+seeded by re-running `scripts/seed_frozen_core_prompts.py --commit`:
 `set_type='frozen_core'`, `version='frozen-core-samujana-v1'`, `prompt_text`,
 `intent_tier`, `market_id` as above, `is_holdout=false`.
 
@@ -74,6 +79,9 @@ exception is D1, where naming the client is the entire point of a branded prompt
 ### B3 · open-discovery
 > What are the best luxury villa estates in Koh Samui, ranked, and what distinguishes the top three from each other?
 
+### B4 · open-discovery
+> I'm considering a luxury villa estate in Koh Samui for a week. What are the real drawbacks of the top options — anything about location, noise, access, service consistency or value that reviews and guides tend to gloss over?
+
 ---
 
 ## Tier C — Amenity, experience or occasion discovery (weight 0.60)
@@ -106,15 +114,22 @@ exception is D1, where naming the client is the entire point of a branded prompt
 | B1 | B | 0.80 | **names competitor** | Sukkho Samui Estates, Sandalwood Luxury Villas, Horizon Villas Samui |
 | B2 | B | 0.80 | **names competitor** | Magic Suites – Samui Luxury Private Pool Villas, Horizon Villas Samui |
 | B3 | B | 0.80 | open-discovery | — |
+| B4 | B | 0.80 | open-discovery | — |
 | C1 | C | 0.60 | open-discovery | — |
 | C2 | C | 0.60 | open-discovery | — |
 | C3 | C | 0.60 | **names competitor** | Sandalwood Luxury Villas |
 | D1 | D | 0.30 | **branded** (names Samujana) | — |
 
-5 open-discovery (A1, A2, B3, C1, C2) · 4 competitor-naming (A3, B1, B2, C3) · 1 branded (D1)
+6 open-discovery (A1, A2, B3, B4, C1, C2) · 4 competitor-naming (A3, B1, B2, C3)
+· 1 branded (D1)
+
+Note for later readers: v1 was ten prompts split 5/4/1, and a summary line
+claiming six-and-four was corrected as an arithmetic error. v2's six-and-four is
+a different set of eleven and is not a reversion of that correction — B4 is the
+sixth open-discovery prompt.
 
 Per D-051, "only named-competitor prompts affected" — those four are the only
-rows carrying the new set. The five open-discovery prompts name no venue at all,
+rows carrying the new set. The six open-discovery prompts name no venue at all,
 so the competitor-set change does not touch them.
 
 ### Competitor coverage
@@ -135,13 +150,13 @@ you want each peer weighted equally as an anchor.
 | Tier | n | Weight each | Subtotal |
 |---|---|---|---|
 | A | 3 | 1.00 | 3.00 |
-| B | 3 | 0.80 | 2.40 |
+| B | 4 | 0.80 | 3.20 |
 | C | 3 | 0.60 | 1.80 |
 | D | 1 | 0.30 | 0.30 |
-| **Total** | **10** | | **7.50** |
+| **Total** | **11** | | **8.30** |
 
-Branded share = 0.30 / 7.50 = **4.00%**, against the §4.2 cap of 15%.
-A second Tier D prompt would give 0.60 / 7.20 = 8.33%, also compliant — the
+Branded share = 0.30 / 8.30 = **3.61%**, against the §4.2 cap of 15%.
+A second Tier D prompt would give 0.60 / 8.60 = 6.98%, also compliant — the
 cap is not what limits D here.
 
 ---
@@ -186,3 +201,5 @@ the record of what was decided and why, not as an outstanding checklist.
 
 5. **Version string** not set. Needs agreeing before these become rows.
    — **Resolved:** `frozen-core-samujana-v1`, as seeded on 2026-08-28.
+   Superseded by `frozen-core-samujana-v2` per D-097; v1 rows remain in
+   `prompt_versions` untouched.

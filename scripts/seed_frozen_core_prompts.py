@@ -34,7 +34,7 @@ SOURCE_DOC = Path(__file__).resolve().parents[1] / "docs" / "frozen-core-prompts
 
 # Agreed version string. §7: this is the prompt-set identity carried to the
 # gate, so it is stated once, here, and never derived.
-PROMPT_SET_VERSION = "frozen-core-samujana-v1"
+PROMPT_SET_VERSION = "frozen-core-samujana-v2"
 
 SET_TYPE = "frozen_core"
 
@@ -46,7 +46,7 @@ MARKET_ID = "2d4854b9-5589-44a5-886b-c895e99c7b95"
 # Frozen Core instrument. The driver's preflight rejects a flagged row.
 IS_HOLDOUT = False
 
-EXPECTED_COUNT = 10
+EXPECTED_COUNT = 11
 
 _TIER_RE = re.compile(r"^##\s+Tier\s+([ABCD])\b")
 _PROMPT_RE = re.compile(r"^###\s+([ABCD]\d)\s*·")
