@@ -194,6 +194,76 @@ def test_non_200_fails_closed(ledger):
     assert ledger.is_burned("abc1")
 
 
+def test_non_200_with_a_body_still_hashes_it(ledger):
+    """A rejection body is often the one artifact that separates a pool fault
+    from a geolocation-source fault. Burning the session without preserving it
+    throws away the diagnostic and keeps only the symptom."""
+    import hashlib
+
+    body = b'{"error":{"title":"Rate limit exceeded"}}'
+    check = verify_exit_geography(
+        session(), probe=probe_returning(429, body), ledger=ledger
+    )
+
+    assert check.passed is False
+    assert "HTTP 429" in check.failure_reason
+    assert check.payload_hash == hashlib.sha256(body).hexdigest()
+
+
+def test_non_200_with_a_body_can_keep_the_raw_file(ledger, tmp_path):
+    body = b"<html>407 Proxy Authentication Required</html>"
+    check = verify_exit_geography(
+        session(),
+        probe=probe_returning(407, body),
+        ledger=ledger,
+        evidence_dir=str(tmp_path),
+        discard=False,
+    )
+
+    assert check.raw_path is not None
+    with open(check.raw_path, "rb") as handle:
+        assert handle.read() == body
+
+
+def test_an_empty_body_has_no_hash_rather_than_the_empty_digest(ledger):
+    """SHA-256 of zero bytes is a constant. Storing it would put a value in
+    payload_hash that looks like evidence of a response and is evidence only
+    that there was none."""
+    import hashlib
+
+    empty_digest = hashlib.sha256(b"").hexdigest()
+
+    check = verify_exit_geography(
+        session(), probe=probe_returning(407, b""), ledger=ledger
+    )
+
+    assert check.payload_hash is None
+    assert check.payload_hash != empty_digest
+
+
+def test_an_empty_body_leaves_no_file_behind(ledger, tmp_path):
+    verify_exit_geography(
+        session(),
+        probe=probe_returning(502, b""),
+        ledger=ledger,
+        evidence_dir=str(tmp_path),
+        discard=False,
+    )
+
+    assert os.listdir(tmp_path) == []
+
+
+def test_a_transport_fault_has_no_hash(ledger):
+    """No body exists to hash — absent for a reason, and visible as None."""
+    check = verify_exit_geography(
+        session(), probe=probe_raising(TimeoutError("read timed out")), ledger=ledger
+    )
+
+    assert check.passed is False
+    assert check.payload_hash is None
+    assert check.raw_path is None
+
+
 def test_transport_error_fails_closed(ledger):
     check = verify_exit_geography(
         session(), probe=probe_raising(TimeoutError("read timed out")), ledger=ledger

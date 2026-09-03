@@ -48,11 +48,29 @@ is a capture whose geography nobody established.
 
 ## Hashing, and what is deliberately not stored
 
-The probe's raw response bytes are hashed with `vault.sha256_file` — the
-bytes-on-disk hash, not `hash_payload`'s canonical-JSON one, because what is
-being attested is the response as observed rather than a dict Atlas built
-from it. The file is then unlinked by default and only the digest survives on
-`ExitGeographyCheck.payload_hash`.
+Whenever a response body is received, its raw bytes are hashed with
+`vault.sha256_file` — the bytes-on-disk hash, not `hash_payload`'s
+canonical-JSON one, because what is being attested is the response as
+observed rather than a dict Atlas built from it. The file is then unlinked by
+default and only the digest survives on `ExitGeographyCheck.payload_hash`.
+
+**Hashing is not conditional on the check passing, or on HTTP 200.** An
+earlier version hashed only after a 200, which meant a non-200 carrying a body
+— the pool itself rejecting the request, a geolocation source returning an
+error document — burned the session with nothing preserved: no hash, no
+evidence of what was actually said. That is backwards. A rejection body is
+frequently the most diagnostic artifact the check produces, and D-099's own
+finding came from keeping the anomalous responses rather than discarding
+them. `payload_hash` is therefore populated on every branch downstream of a
+received body, pass or fail.
+
+Two cases have no hash, necessarily rather than by choice, and both are
+visible as `payload_hash is None`:
+
+- a transport fault, where no body exists to hash;
+- a response with an empty body, where a digest would be the SHA-256 of zero
+  bytes — a constant, identical for every such response, attesting nothing.
+  Recorded as absent rather than as a hash that looks like evidence.
 
 This writes nothing to the database. `evidence` rows are observation-scoped
 (D-049's provenance columns are per-observation), and a capture-configuration
@@ -90,6 +108,14 @@ from atlas.evidence.vault import sha256_file
 # D-099's own probe target. Named as a constant rather than inlined so the
 # "equivalent geolocation source" the decision allows is a one-line
 # substitution with a visible history, not an edit buried in a call.
+#
+# KNOWN OPERATIONAL DEPENDENCY, not a defect: this is a single unauthenticated
+# third-party endpoint with no fallback, and because the check fails closed,
+# a rate-limit or a response-shape change here burns every session regardless
+# of pool health — the failure presents as a dead proxy pool while the pool is
+# fine. `url` is a per-call parameter so a second source can be substituted
+# without a code change; choosing and sequencing one is a capture-pipeline
+# decision, not something to settle inside this primitive.
 GEOLOCATION_URL = "https://ipinfo.io/json"
 
 # The ratified calibration market for Samujana is TH/en (D-088), and D-091
@@ -286,12 +312,20 @@ def verify_exit_geography(
         # password (D-096).
         return fail(f"probe raised {type(exc).__name__}: {_mask(str(exc))}")
 
-    if status != 200:
-        return fail(f"geolocation source returned HTTP {status}")
-
     # Hash before anything is decided about the body, and before it is
-    # discarded — the digest attests what was received, not what parsed.
+    # discarded — the digest attests what was received, not what parsed, and
+    # not whether the status line was one this check likes.
     payload_hash, raw_path = _hash_body(body, session.session_id, evidence_dir, discard)
+
+    if status != 200:
+        # A rejection body is preserved by hash like any other. It is often
+        # the one artifact that distinguishes a pool fault from a geolocation
+        # source fault, which is exactly the distinction D-099 left open.
+        return fail(
+            f"geolocation source returned HTTP {status}",
+            payload_hash=payload_hash,
+            raw_path=raw_path,
+        )
 
     try:
         payload = json.loads(body)
@@ -361,13 +395,21 @@ def require_exit_geography(
 
 def _hash_body(
     body: bytes, session_id: str, evidence_dir: str | None, discard: bool
-) -> tuple[str, str | None]:
+) -> tuple[str | None, str | None]:
     """Write the raw bytes, hash the file, and unlink it unless kept.
 
     `sha256_file` rather than `hash_payload`: the artifact is a response as
     received, and hashing a dict Atlas decoded from it would attest Atlas's
     parse instead of the pool's answer.
+
+    Returns `(None, None)` for an empty body. The SHA-256 of zero bytes is a
+    well-known constant, so storing it would put a value in `payload_hash`
+    that looks like evidence of a response and is evidence only that there
+    was none.
     """
+    if not body:
+        return None, None
+
     directory = evidence_dir or tempfile.gettempdir()
     os.makedirs(directory, exist_ok=True)
     fd, path = tempfile.mkstemp(
