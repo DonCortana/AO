@@ -20,5 +20,5 @@ The candidate text drafted here (Layer B `provider_scope` for the `frozen-core-s
 
 ---
 
-**Registration order:** all five registered 2026-09-01 to 2026-09-04 — §1 as D-068, §2 as D-093 (Option A, presence-only, unblocking Phase C), §3 as D-069, §4 as D-100 (three surfaces, not the four this file proposed), §5 as D-103. §1–§4 followed the same-PR rule from Action Plan Phase B: register entry + impacted governing-doc updates land together. D-103 was registered without accompanying governing-doc updates; the Methodology v1.0 statement of the AVS denominator that D-103 requires is outstanding.
+**Registration order:** all five registered 2026-09-01 to 2026-09-04 — §1 as D-068, §2 as D-093 (Option A, presence-only, unblocking Phase C), §3 as D-069, §4 as D-100 (three surfaces, not the four this file proposed), §5 as D-103. §1–§4 followed the same-PR rule from Action Plan Phase B: register entry + impacted governing-doc updates land together. D-103 was registered without accompanying governing-doc updates; the Methodology v1.0 statement of the AVS denominator that D-103 requires is outstanding. Candidate D-109 registered as D-109 on 2026-09-04.
 
